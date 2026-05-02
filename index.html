@@ -10926,6 +10926,9 @@ Format:
       }
     }, 1300);
   });
+
+  // Expose postSync globally so other script blocks can push device state via Firebase
+  window._uxPostSync = function(type, payload){ postSync(type, payload); };
 })();
 </script>
 
@@ -11306,6 +11309,8 @@ Format:
       at: Date.now()
     };
     try { localStorage.setItem(key(DEVICE_SUFFIX), JSON.stringify(payload)); } catch(e) {}
+    // Push via Firebase sync channel so researcher sees it on a different device
+    if (window._uxPostSync) try { window._uxPostSync('participant-device-state', payload); } catch(e) {}
   }
 
   // Speech recognition restart fix: participant mic should keep transcribing even when researcher controls recording.
@@ -11355,12 +11360,66 @@ Format:
   };
 
   window.uxParticipantReadySignal = async function(){
+    // ── Screen share MUST be the very first await — browsers expire the user gesture
+    // ── token after even a few async hops. Calling getDisplayMedia here (before any
+    // ── other await) guarantees it fires within the gesture's activation window.
+    if (isParticipant()) {
+      const liveScreen = hasLiveTrack(state.screenStream, 'video');
+      if (!liveScreen) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          showToast('Screen sharing is not supported in this browser. Try Chrome or Edge on desktop.');
+          return;
+        }
+        try {
+          showToast('A screen-selection dialog will appear — pick the screen or window to share');
+          const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } },
+            audio: true
+          });
+          state.screenStream = stream;
+          state.recOpts.screen = true;
+          document.getElementById('chk-screen')?.classList.add('checked');
+          document.getElementById('rec-screen')?.classList.add('active');
+          const screenCard = document.getElementById('screen-preview-card');
+          const screenVid  = document.getElementById('screen-vid');
+          const placeholder = document.querySelector('.screen-placeholder-text');
+          if (screenCard) screenCard.style.display = 'block';
+          if (placeholder) placeholder.style.display = 'none';
+          if (screenVid) {
+            screenVid.srcObject = stream;
+            screenVid.muted = true; screenVid.playsInline = true; screenVid.style.display = 'block';
+            try { await screenVid.play(); } catch(pe) {}
+          }
+          stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+            state.recOpts.screen = false;
+            state.screenStream = null;
+            document.getElementById('chk-screen')?.classList.remove('checked');
+            document.getElementById('rec-screen')?.classList.remove('active');
+          });
+        } catch(e) {
+          console.error('[UXLens] Screen share failed:', e);
+          showToast('Screen share was denied or cancelled. Please try again and allow screen sharing.');
+          return;
+        }
+      }
+    }
     const result = baseUxParticipantReadySignal ? await baseUxParticipantReadySignal.apply(this, arguments) : undefined;
     if (isParticipant()) {
       publishDeviceStateNow();
       setInterval(() => { if (isParticipant()) publishDeviceStateNow(); }, 1200);
     }
     return result;
+  };
+
+  // Override setMicUI: fires after startMic() resolves (async mic permission grant).
+  // The toggleRecAndStartDevice chain fires too early (before permission granted),
+  // so this is the reliable hook to publish mic=true once the browser actually grants access.
+  window.setMicUI = function(on){
+    if (baseSetMicUI) baseSetMicUI.apply(this, arguments);
+    if (isParticipant()) {
+      // Small delay so state.micActive is already updated by the caller
+      setTimeout(publishDeviceStateNow, 80);
+    }
   };
 
   window.uxEnterResearcherMeeting = function(){
