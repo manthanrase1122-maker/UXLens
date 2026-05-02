@@ -6,6 +6,9 @@
 <title>UXLens-AI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Firebase SDK for cross-device real-time sync -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
 /* ══════════════════════════════════════
    RESET + BASE
@@ -2296,6 +2299,122 @@ body {
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+  FIREBASE CONFIG + CROSS-DEVICE SIGNALING
+  ─────────────────────────────────────────────────────────────────────────
+  HOW TO SET UP (one-time, ~5 minutes):
+  1. Go to https://console.firebase.google.com → Create a project
+  2. In the project, click "Build" → "Realtime Database" → "Create database"
+     → choose your region → Start in TEST MODE (allows read/write for 30 days)
+  3. Click the gear icon → "Project settings" → scroll to "Your apps" → "</> Web"
+  4. Register the app, copy the firebaseConfig values below
+  5. Redeploy / save the file
+
+  Realtime Database rules for development (paste in the Rules tab):
+  {
+    "rules": {
+      "uxlens": {
+        ".read": true,
+        ".write": true
+      }
+    }
+  }
+═══════════════════════════════════════════════════════════════════════ -->
+<script id="uxlens-firebase-bridge">
+(function(){
+
+  /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
+  const UXLENS_FB_CONFIG = {
+  apiKey: "AIzaSyBti_NgPevmEkzvV-2_ghBJ5UL4TCkkbVU",
+  authDomain: "uxlens-735af.firebaseapp.com",
+  databaseURL: "https://uxlens-735af-default-rtdb.firebaseio.com",
+  projectId: "uxlens-735af",
+  storageBucket: "uxlens-735af.firebasestorage.app",
+  messagingSenderId: "983927198291",
+  appId: "1:983927198291:web:e9edf153a06110d675eca6"
+};
+  /* ── 2. FIREBASE INIT ─────────────────────────────────────────────── */
+  window._uxFbDb = null;
+  if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
+    try {
+      const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(UXLENS_FB_CONFIG);
+      window._uxFbDb = firebase.database(app);
+      console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
+    } catch(e) {
+      console.error('[UXLens] Firebase init failed:', e);
+      window._uxFbDb = null;
+    }
+  } else {
+    console.warn('[UXLens] Firebase not configured — fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync. Same-device sync still works via BroadcastChannel.');
+  }
+
+  /* ── 3. FirebaseChannel — drop-in for BroadcastChannel ───────────────
+     API: new FirebaseChannel(name)  |  .postMessage(data)  |  .onmessage  |  .close()
+     Each channel maps to  /uxlens/ch/{name}/msgs  in the Realtime Database.
+     Only messages pushed AFTER this instance was created are delivered.
+  ─────────────────────────────────────────────────────────────────────── */
+  class FirebaseChannel {
+    constructor(name) {
+      this.name = name;
+      this.onmessage = null;
+      this._db = window._uxFbDb;
+      this._closed = false;
+      this._startAt = Date.now();
+      // Firebase path: sanitise any chars not allowed as keys
+      const safeName = name.replace(/[.#$\[\]/]/g, '_');
+      this._ref = this._db ? this._db.ref('uxlens/ch/' + safeName) : null;
+      this._cleanupInterval = null;
+      if (this._ref) this._startListening();
+    }
+
+    _startListening() {
+      const msgsRef = this._ref.child('msgs');
+      // child_added fires for existing children first, then new ones.
+      // We filter by _at > startAt to ignore stale messages from previous sessions.
+      msgsRef.orderByChild('_at').startAt(this._startAt).on('child_added', snap => {
+        if (this._closed) return;
+        const val = snap.val();
+        if (val && val.data !== undefined && this.onmessage) {
+          try { this.onmessage({ data: val.data }); } catch(e) { console.warn('[FirebaseChannel] onmessage error', e); }
+        }
+      });
+      // Prune messages older than 3 minutes every 2 minutes to keep DB lean
+      this._cleanupInterval = setInterval(() => {
+        if (!this._ref || this._closed) return;
+        const cutoff = Date.now() - 180000;
+        this._ref.child('msgs').orderByChild('_at').endAt(cutoff).once('value', snap => {
+          snap.forEach(child => child.ref.remove());
+        });
+      }, 120000);
+    }
+
+    postMessage(data) {
+      if (!this._ref) return;
+      this._ref.child('msgs').push({ data, _at: Date.now() });
+    }
+
+    close() {
+      this._closed = true;
+      if (this._cleanupInterval) clearInterval(this._cleanupInterval);
+      if (this._ref) {
+        try { this._ref.child('msgs').off(); } catch(e) {}
+      }
+    }
+  }
+
+  window.FirebaseChannel = FirebaseChannel;
+
+  /* Helper: returns FirebaseChannel if Firebase is ready, otherwise BroadcastChannel */
+  window.uxMakeChannel = function(name) {
+    if (window._uxFbDb && window.FirebaseChannel) return new FirebaseChannel(name);
+    if (typeof BroadcastChannel !== 'undefined') return new BroadcastChannel(name);
+    return null;
+  };
+
+})();
+</script>
+
 <script>
 /* ══════════════════════
    STATE
@@ -8425,6 +8544,12 @@ Format:
       state.online.participantStartedAt = event.at;
       showToast('Participant joined and is ready');
       uxUpdateOnlineStatusUI();
+      // Trigger a fresh WebRTC offer so researcher's screen preview connects immediately
+      setTimeout(() => {
+        if (state.online.role === 'researcher' && typeof window.uxStartOnlineMirrorReceiver === 'function') {
+          window.uxStartOnlineMirrorReceiver();
+        }
+      }, 500);
     }
     if (event.type === 'participant-device') {
       state.online.participantDevices[p.device] = !!p.enabled;
@@ -8444,12 +8569,17 @@ Format:
     if (!state.online.roomId) return;
     try {
       if (bc) bc.close();
-      bc = new BroadcastChannel('uxlens-room-' + state.online.roomId);
-      bc.onmessage = e => uxHandleRoomEvent(e.data);
+      bc = window.uxMakeChannel
+        ? window.uxMakeChannel('uxlens-room-' + state.online.roomId)
+        : new BroadcastChannel('uxlens-room-' + state.online.roomId);
+      if (bc) bc.onmessage = e => uxHandleRoomEvent(e.data);
     } catch(e){}
-    window.addEventListener('storage', e => {
-      if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
-    });
+    // Storage listener as same-device fallback when Firebase is not configured
+    if (!window._uxFbDb) {
+      window.addEventListener('storage', e => {
+        if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
+      });
+    }
   }
 
   function uxEnsureMeetingChrome(){
@@ -8466,7 +8596,10 @@ Format:
       const card = document.createElement('div');
       card.id = 'ux-online-status-card';
       card.className = 'ux-online-status-card';
-      card.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><strong id="ux-online-status-title">Participant Status</strong><button class="btn btn-secondary" style="margin-left:auto;padding:7px 12px" onclick="uxCopyParticipantLink()">Copy Participant Link</button></div><div class="ux-status-row"><span class="ux-device-chip off" id="ux-chip-webcam">Webcam off</span><span class="ux-device-chip off" id="ux-chip-mic">Mic off</span><span class="ux-device-chip off" id="ux-chip-screen">Screen share off</span></div><div style="font-size:11.5px;color:var(--text-3);margin-top:9px">In this static prototype, online events sync across tabs on the same browser origin. A backend/WebRTC signaling service is required for real different-machine live video mirroring.</div>`;
+      const fbStatus = window._uxFbDb
+        ? '🟢 Firebase connected — cross-device sync active. Participant and researcher can join from different devices.'
+        : '⚠️ Firebase not configured — sync works on same device only. Fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync.';
+      card.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><strong id="ux-online-status-title">Participant Status</strong><button class="btn btn-secondary" style="margin-left:auto;padding:7px 12px" onclick="uxCopyParticipantLink()">Copy Participant Link</button></div><div class="ux-status-row"><span class="ux-device-chip off" id="ux-chip-webcam">Webcam off</span><span class="ux-device-chip off" id="ux-chip-mic">Mic off</span><span class="ux-device-chip off" id="ux-chip-screen">Screen share off</span></div><div style="font-size:11.5px;color:var(--text-3);margin-top:9px">${fbStatus}</div>`;
       layout.prepend(card);
     }
   }
@@ -9283,8 +9416,10 @@ Format:
     try { if (rtcChannel) rtcChannel.close(); } catch(e){}
     rtcRole = role;
     rtcStartedForRoom = room;
-    rtcChannel = new BroadcastChannel(RTC_CHANNEL_PREFIX + room);
-    rtcChannel.onmessage = handleRtcMessage;
+    rtcChannel = window.uxMakeChannel
+      ? window.uxMakeChannel(RTC_CHANNEL_PREFIX + room)
+      : new BroadcastChannel(RTC_CHANNEL_PREFIX + room);
+    if (rtcChannel) rtcChannel.onmessage = handleRtcMessage;
     return rtcChannel;
   }
 
@@ -9502,6 +9637,17 @@ Format:
       }
       if (isResearcher() && msg.type === 'participant-screen-ended') {
         showToast('Participant stopped screen sharing');
+      }
+      // Participant signals they have screen share ready → researcher sends a fresh offer
+      if (isResearcher() && msg.type === 'participant-ready-for-rtc') {
+        showToast('Participant screen ready — connecting…');
+        setTimeout(() => startResearcherRtcOffer(true), 200);
+      }
+      // Participant device update (mic/screen toggle) → re-negotiate so audio track is current
+      if (isResearcher() && msg.type === 'participant-device-update') {
+        if (msg.payload && (msg.payload.device === 'mic' || msg.payload.device === 'screen')) {
+          setTimeout(() => startResearcherRtcOffer(true), 400);
+        }
       }
     } catch(e) {
       console.warn('RTC signaling issue', e);
@@ -10263,6 +10409,7 @@ Format:
   let onlineSyncChannel = null;
   let participantTranscriptLines = [];
   let lastTranscriptIdSeen = '';
+  const seenTranscriptIds = new Set();
   let participantStatusPoll = null;
 
   const originalSwitchPhase = window.switchPhase;
@@ -10300,10 +10447,12 @@ Format:
   }
 
   function ensureChannel(){
-    if (onlineSyncChannel || !rid() || !('BroadcastChannel' in window)) return onlineSyncChannel;
+    if (onlineSyncChannel || !rid()) return onlineSyncChannel;
     try {
-      onlineSyncChannel = new BroadcastChannel('uxlens_online_sync_' + rid());
-      onlineSyncChannel.onmessage = ev => handleOnlineSyncMessage(ev.data || {});
+      onlineSyncChannel = window.uxMakeChannel
+        ? window.uxMakeChannel('uxlens_online_sync_' + rid())
+        : ('BroadcastChannel' in window ? new BroadcastChannel('uxlens_online_sync_' + rid()) : null);
+      if (onlineSyncChannel) onlineSyncChannel.onmessage = ev => handleOnlineSyncMessage(ev.data || {});
     } catch(e) { onlineSyncChannel = null; }
     return onlineSyncChannel;
   }
@@ -10334,7 +10483,11 @@ Format:
   }
 
   function appendResearcherParticipantTranscript(payload){
-    if (!isResearcher() || !payload || !payload.text || payload.id === lastTranscriptIdSeen) return;
+    if (!isResearcher() || !payload || !payload.text) return;
+    if (payload.id) {
+      if (seenTranscriptIds.has(payload.id)) return;
+      seenTranscriptIds.add(payload.id);
+    }
     lastTranscriptIdSeen = payload.id;
     participantTranscriptLines.push(payload);
     const box = document.getElementById('transcript-box');
@@ -11917,11 +12070,21 @@ Format:
           var PREFIX = 'uxlens_online_room_';
           var rid = (state.online && state.online.roomId) ? state.online.roomId : '';
           if (rid){
+            // Update localStorage for same-device fallback
             var devKey = PREFIX + rid + '_participant_device_state';
             var current = JSON.parse(localStorage.getItem(devKey) || '{}');
             current.mic = true;
             current.at  = Date.now();
             localStorage.setItem(devKey, JSON.stringify(current));
+            // Also push via Firebase sync channel for cross-device
+            if (window._uxFbDb && window.uxMakeChannel) {
+              var ch = window.uxMakeChannel('uxlens_online_sync_' + rid);
+              if (ch) {
+                ch.postMessage({ type: 'participant-device-state', payload: current, roomId: rid, sender: 'participant', at: Date.now() });
+                // Close immediately; we only needed one push
+                setTimeout(function(){ try { ch.close(); } catch(e){} }, 2000);
+              }
+            }
           }
         } catch(e){}
       }
