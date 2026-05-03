@@ -8495,8 +8495,6 @@ Format:
   let originalGenerateInsight = window.generateInsight;
   let originalSynthesize = window.synthesizeSessionAndGoAnalysis;
   let bc = null;
-  const uxSeenRoomEvents = new Set();
-  let uxRoomEventsRef = null;
 
   state.online = state.online || {
     mode: 'remote',
@@ -8518,68 +8516,27 @@ Format:
   function uxBuildParticipantLink(){
     const roomId = state.online.roomId || uxMakeRoomId();
     state.online.roomId = roomId;
-
-    const roomData = {
-      study: state.study,
-      p: state.p,
-      roomId,
-      createdAt: new Date().toISOString()
-    };
-
-    // Same-browser fallback. Useful for local testing.
-    try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify(roomData)); } catch(e){}
-
-    // Real online sharing. Full context goes to Firebase, not into the URL.
-    try {
-      if (window._uxFbDb) {
-        window._uxFbDb.ref('uxlens/rooms/' + roomId + '/context').set(roomData);
-      }
-    } catch(e) {
-      console.warn('[UXLens] Firebase context save failed:', e);
-    }
-
+    const payload = uxEncodePayload({ study: state.study, p: state.p, createdAt: new Date().toISOString() });
     const url = new URL(location.href.split('#')[0]);
     url.searchParams.set('uxRole','participant');
     url.searchParams.set('uxMode','online');
     url.searchParams.set('uxRoom',roomId);
-    url.searchParams.delete('uxCtx');
-
+    if (payload) url.searchParams.set('uxCtx',payload);
     state.online.participantLink = url.toString();
+    try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify({ study: state.study, p: state.p, roomId, createdAt: new Date().toISOString() })); } catch(e){}
     return state.online.participantLink;
   }
 
   function uxSendRoomEvent(type, payload = {}){
     const roomId = state.online.roomId;
     if (!roomId) return;
-    const event = {
-      id: 'evt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8),
-      type,
-      payload,
-      roomId,
-      at: new Date().toISOString(),
-      sender: state.online.role || 'researcher'
-    };
-
+    const event = { type, payload, roomId, at: new Date().toISOString(), sender: state.online.role || 'researcher' };
     try { localStorage.setItem(uxRoomKey(roomId) + '_event', JSON.stringify(event)); } catch(e){}
     if (bc) { try { bc.postMessage(event); } catch(e){} }
-
-    // Direct Firebase room events for reliable cross-device participant/researcher sync on Netlify.
-    try {
-      if (window._uxFbDb) {
-        window._uxFbDb.ref('uxlens/rooms/' + roomId + '/events').push(event);
-      }
-    } catch(e) {
-      console.warn('[UXLens] Firebase event send failed:', e);
-    }
   }
 
   function uxHandleRoomEvent(event){
     if (!event || event.roomId !== state.online.roomId) return;
-    if (event.id) {
-      if (uxSeenRoomEvents.has(event.id)) return;
-      uxSeenRoomEvents.add(event.id);
-      if (uxSeenRoomEvents.size > 300) uxSeenRoomEvents.clear();
-    }
     if (event.sender === state.online.role) return;
     const p = event.payload || {};
     if (event.type === 'participant-ready') {
@@ -8617,28 +8574,11 @@ Format:
         : new BroadcastChannel('uxlens-room-' + state.online.roomId);
       if (bc) bc.onmessage = e => uxHandleRoomEvent(e.data);
     } catch(e){}
-
-    // Same-device fallback.
-    window.addEventListener('storage', e => {
-      if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
-    });
-
-    // Cross-device Firebase listener.
-    try {
-      if (window._uxFbDb) {
-        if (uxRoomEventsRef) { try { uxRoomEventsRef.off(); } catch(e){} }
-        uxRoomEventsRef = window._uxFbDb.ref('uxlens/rooms/' + state.online.roomId + '/events');
-        const startAt = Date.now() - 15000;
-        uxRoomEventsRef.limitToLast(80).on('child_added', snap => {
-          const event = snap.val();
-          if (!event) return;
-          const t = Date.parse(event.at || '') || 0;
-          if (t && t < startAt) return;
-          uxHandleRoomEvent(event);
-        });
-      }
-    } catch(e) {
-      console.warn('[UXLens] Firebase room listener failed:', e);
+    // Storage listener as same-device fallback when Firebase is not configured
+    if (!window._uxFbDb) {
+      window.addEventListener('storage', e => {
+        if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
+      });
     }
   }
 
@@ -8904,33 +8844,16 @@ Format:
     };
   }
 
-  async function uxLoadParticipantContextFromUrl(){
+  function uxLoadParticipantContextFromUrl(){
     const params = new URLSearchParams(location.search);
     if (params.get('uxMode') !== 'online' || params.get('uxRole') !== 'participant') return false;
     const roomId = params.get('uxRoom') || uxMakeRoomId();
     state.online.mode = 'online';
     state.online.role = 'participant';
     state.online.roomId = roomId;
-
-    let ctx = null;
-
-    // 1) Real online context from Firebase. This keeps the participant link short.
-    try {
-      if (window._uxFbDb) {
-        const snap = await window._uxFbDb.ref('uxlens/rooms/' + roomId + '/context').once('value');
-        ctx = snap.val();
-      }
-    } catch(e) {
-      console.warn('[UXLens] Firebase context load failed:', e);
-    }
-
-    // 2) Same-browser fallback for local testing.
-    if (!ctx) ctx = uxSafeJsonParse(localStorage.getItem(uxRoomKey(roomId)), null);
-
-    // 3) Backward compatibility for older long links.
-    if (!ctx) ctx = uxDecodePayload(params.get('uxCtx') || '');
-
-    ctx = ctx || {};
+    const payload = uxDecodePayload(params.get('uxCtx') || '');
+    const stored = uxSafeJsonParse(localStorage.getItem(uxRoomKey(roomId)), null);
+    const ctx = payload || stored || {};
     if (ctx.study) state.study = { ...state.study, ...ctx.study };
     if (ctx.p) state.p = { ...state.p, ...ctx.p };
     renderTasks?.();
@@ -8941,30 +8864,17 @@ Format:
     if (desc) desc.textContent = `You are joining ${state.study.projectName || 'a product'} usability test. Click Start Testing to enter the session. Mic and webcam are optional; screen share starts automatically when you click I’m Ready.`;
     if (lobby) lobby.classList.add('show');
     document.body.classList.add('ux-online-participant');
-    const pageTitle = document.getElementById('page-title');
-    if (pageTitle) pageTitle.textContent = 'Participant Lobby';
+    document.getElementById('page-title').textContent = 'Participant Lobby';
     uxInitRoomBridge();
     return true;
   }
 
-  document.addEventListener('DOMContentLoaded', async () => {
-    await uxLoadParticipantContextFromUrl();
+  document.addEventListener('DOMContentLoaded', () => {
+    uxLoadParticipantContextFromUrl();
     uxUpdateResearcherActionGates();
     const startSessionBtn = document.querySelector('.start-session-btn');
     if (startSessionBtn) startSessionBtn.textContent = 'Start Testing Session';
   });
-
-  window.uxSendParticipantDeviceSnapshot = function(payload){
-    if (!state.online || state.online.mode !== 'online' || state.online.role !== 'participant') return;
-    if (!payload) return;
-    ['screen','mic','webcam'].forEach(k => {
-      uxSendRoomEvent('participant-device', {
-        device: k,
-        label: k === 'screen' ? 'screen share' : (k === 'mic' ? 'mic/audio' : 'webcam'),
-        enabled: !!payload[k]
-      });
-    });
-  };
 
   window.uxDebugOnlineState = function(){ return JSON.parse(JSON.stringify(state.online)); };
 })();
@@ -10160,10 +10070,6 @@ Format:
         at: new Date().toISOString(),
         sender: 'participant'
       }));
-      // Netlify / different-device fallback: publish a lightweight latest frame to Firebase.
-      if (window._uxFbDb) {
-        window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest').set(payload);
-      }
     } catch(e) {
       console.warn('UXLens screen preview publish failed:', e);
     }
@@ -10185,18 +10091,9 @@ Format:
     if (!isResearcher() || !roomId()) return;
     ensureResearcherScreenUI();
     const payload = safeParse(localStorage.getItem(key()));
-    if (payload && payload.roomId === roomId() && payload.frame && Date.now() - Number(payload.at || 0) <= 9000) {
-      setResearcherFrame(payload.frame, payload);
-      return;
-    }
-    if (window._uxFbDb) {
-      window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest').once('value').then(snap => {
-        const fbPayload = snap.val();
-        if (!fbPayload || fbPayload.roomId !== roomId() || !fbPayload.frame) return;
-        if (Date.now() - Number(fbPayload.at || 0) > 9000) return;
-        setResearcherFrame(fbPayload.frame, fbPayload);
-      }).catch(e => console.warn('[UXLens] Firebase screen pull failed:', e));
-    }
+    if (!payload || payload.roomId !== roomId() || !payload.frame) return;
+    if (Date.now() - Number(payload.at || 0) > 9000) return;
+    setResearcherFrame(payload.frame, payload);
   }
 
   function startPulling(){
@@ -10205,16 +10102,6 @@ Format:
     ensureResearcherScreenUI();
     pullFrameNow();
     pullTimer = setInterval(pullFrameNow, PULL_MS);
-    if (window._uxFbDb && roomId()) {
-      try {
-        const ref = window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest');
-        ref.off();
-        ref.on('value', snap => {
-          const payload = snap.val();
-          if (payload && payload.roomId === roomId() && payload.frame) setResearcherFrame(payload.frame, payload);
-        });
-      } catch(e) { console.warn('[UXLens] Firebase screen listener failed:', e); }
-    }
   }
 
   function stopPulling(){
@@ -11424,10 +11311,6 @@ Format:
     try { localStorage.setItem(key(DEVICE_SUFFIX), JSON.stringify(payload)); } catch(e) {}
     // Push via Firebase sync channel so researcher sees it on a different device
     if (window._uxPostSync) try { window._uxPostSync('participant-device-state', payload); } catch(e) {}
-    // Also notify the main online room bridge so the researcher status chips update instantly.
-    if (typeof window.uxSendParticipantDeviceSnapshot === 'function') {
-      try { window.uxSendParticipantDeviceSnapshot(payload); } catch(e) {}
-    }
   }
 
   // Speech recognition restart fix: participant mic should keep transcribing even when researcher controls recording.
@@ -11512,7 +11395,6 @@ Format:
             state.screenStream = null;
             document.getElementById('chk-screen')?.classList.remove('checked');
             document.getElementById('rec-screen')?.classList.remove('active');
-            if (typeof publishDeviceStateNow === 'function') publishDeviceStateNow();
           });
         } catch(e) {
           console.error('[UXLens] Screen share failed:', e);
@@ -12275,6 +12157,328 @@ Format:
   } else {
     startMicSync();
   }
+})();
+</script>
+
+
+<!-- ══════════════════════════════════════
+   UXLENS FINAL SAFE PATCH — Netlify online sync, short links, API status
+   Keeps existing participant/researcher UI unchanged. Adds only behavior overrides.
+══════════════════════════════════════ -->
+<script id="uxlens-netlify-sync-status-shortlink-patch">
+(function(){
+  'use strict';
+
+  const ROOM_PREFIX = 'uxlens_online_room_';
+  const CTX_PREFIX  = 'uxlens_online_ctx_';
+  let researcherRoomRef = null;
+  let participantPublishTimer = null;
+
+  function safeJson(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
+  function roomId(){ return state && state.online && state.online.roomId ? state.online.roomId : new URLSearchParams(location.search).get('uxRoom') || ''; }
+  function isParticipant(){ return state?.online?.mode === 'online' && state?.online?.role === 'participant'; }
+  function isResearcher(){ return state?.online?.mode === 'online' && state?.online?.role === 'researcher'; }
+  function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
+  function hasLiveTrack(stream, kind){
+    try { return !!stream && stream.getTracks().some(t => (!kind || t.kind === kind) && t.readyState === 'live'); }
+    catch(e){ return false; }
+  }
+  function currentDeviceState(){
+    return {
+      mic: !!state?.micActive,
+      screen: hasLiveTrack(state?.screenStream, 'video'),
+      webcam: !!(document.getElementById('webcam-vid')?.srcObject && hasLiveTrack(document.getElementById('webcam-vid').srcObject, 'video')),
+      ready: !!state?.online?.participantReady,
+      at: Date.now()
+    };
+  }
+  function applyParticipantDeviceState(dev){
+    if (!dev || !state?.online) return;
+    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
+    ['mic','webcam','screen'].forEach(k => { if (typeof dev[k] === 'boolean') state.online.participantDevices[k] = dev[k]; });
+    if (dev.ready) state.online.participantReady = true;
+
+    const dot = document.getElementById('ux-meeting-dot');
+    const sub = document.getElementById('ux-meeting-sub');
+    const pill = document.getElementById('ux-meeting-pill');
+    if (dot) dot.classList.toggle('on', !!(dev.ready || dev.mic || dev.webcam || dev.screen));
+    if (sub) {
+      const active = [];
+      if (dev.mic) active.push('mic on');
+      if (dev.webcam) active.push('webcam on');
+      if (dev.screen) active.push('screen share on');
+      sub.textContent = active.length ? 'Participant connected · ' + active.join(' · ') : (dev.ready ? 'Participant is ready' : 'Waiting for participant…');
+    }
+    if (pill) pill.textContent = roomId() ? 'Room ' + roomId() : 'Room';
+
+    const map = { mic:'Mic', webcam:'Webcam', screen:'Screen share' };
+    Object.keys(map).forEach(k => {
+      const chip = document.getElementById('ux-chip-' + k);
+      if (!chip) return;
+      const on = !!dev[k];
+      chip.classList.toggle('on', on);
+      chip.classList.toggle('off', !on);
+      chip.textContent = map[k] + (on ? ' on' : ' off');
+    });
+
+    // Keep old metric mic indicator in sync too.
+    const micDot = document.getElementById('mic-dot-test');
+    const micStatus = document.getElementById('mic-status-test');
+    if (micDot) micDot.classList.toggle('active', !!dev.mic);
+    if (micStatus && isResearcher()) micStatus.textContent = dev.mic ? 'Participant mic on' : 'Participant mic off';
+  }
+
+  async function saveRoomContext(rid){
+    if (!rid) return;
+    const ctx = { study: state.study, p: state.p, roomId: rid, createdAt: new Date().toISOString() };
+    try { localStorage.setItem(CTX_PREFIX + rid, JSON.stringify(ctx)); } catch(e){}
+    try { localStorage.setItem(ROOM_PREFIX + rid, JSON.stringify(ctx)); } catch(e){}
+    if (window._uxFbDb) {
+      try {
+        await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/context').set(ctx);
+        await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/meta').update({ updatedAt: Date.now(), roomId: rid });
+      } catch(e) { console.warn('[UXLens] Could not save room context to Firebase:', e); }
+    }
+  }
+
+  async function loadRoomContext(rid){
+    if (!rid) return null;
+    let ctx = safeJson(localStorage.getItem(CTX_PREFIX + rid), null) || safeJson(localStorage.getItem(ROOM_PREFIX + rid), null);
+    if (!ctx && window._uxFbDb) {
+      try {
+        const snap = await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/context').once('value');
+        ctx = snap.val();
+      } catch(e) { console.warn('[UXLens] Could not load room context from Firebase:', e); }
+    }
+    if (ctx?.study) state.study = { ...state.study, ...ctx.study };
+    if (ctx?.p) state.p = { ...state.p, ...ctx.p };
+    try { renderTasks?.(); renderActiveTasks?.(); updateReadiness?.(); buildReview?.(); } catch(e){}
+    const desc = document.getElementById('ux-lobby-desc');
+    if (desc && ctx?.study) {
+      desc.textContent = `You are joining ${state.study.projectName || 'a product'} usability test. Click Start Testing to enter the session. Mic and webcam are optional; screen share starts when you click I’m Ready.`;
+    }
+    return ctx;
+  }
+
+  function buildShortParticipantLink(){
+    let rid = roomId();
+    if (!rid) rid = 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+    state.online = state.online || {};
+    state.online.roomId = rid;
+    const url = new URL(location.origin + location.pathname);
+    url.searchParams.set('uxRole', 'participant');
+    url.searchParams.set('uxMode', 'online');
+    url.searchParams.set('uxRoom', rid);
+    state.online.participantLink = url.toString();
+    saveRoomContext(rid);
+    return state.online.participantLink;
+  }
+
+  function publishDeviceState(extra){
+    if (!isParticipant()) return;
+    const rid = roomId();
+    if (!rid) return;
+    const dev = { ...currentDeviceState(), ...(extra || {}) };
+    try { localStorage.setItem(ROOM_PREFIX + rid + '_participant_device_state', JSON.stringify(dev)); } catch(e){}
+    if (window._uxFbDb) {
+      try { window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').set(dev); } catch(e){}
+    }
+    // Also send through the existing channel so older code paths still react.
+    try {
+      if (typeof window.uxMakeChannel === 'function') {
+        const ch = window.uxMakeChannel('uxlens-room-' + rid);
+        if (ch) {
+          ch.postMessage({ type:'participant-device-state', payload:dev, roomId:rid, sender:'participant', at:new Date().toISOString() });
+          ['mic','webcam','screen'].forEach(k => ch.postMessage({ type:'participant-device', payload:{ device:k, label:k === 'screen' ? 'screen share' : k, enabled:!!dev[k] }, roomId:rid, sender:'participant', at:new Date().toISOString() }));
+          setTimeout(() => { try { ch.close(); } catch(e){} }, 1200);
+        }
+      }
+    } catch(e){}
+  }
+
+  function startParticipantPublishing(){
+    if (participantPublishTimer) clearInterval(participantPublishTimer);
+    publishDeviceState();
+    participantPublishTimer = setInterval(() => { if (isParticipant()) publishDeviceState(); }, 1200);
+  }
+
+  function startResearcherListening(){
+    const rid = roomId();
+    if (!rid || !window._uxFbDb) return;
+    try { if (researcherRoomRef) researcherRoomRef.off(); } catch(e){}
+    researcherRoomRef = window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState');
+    researcherRoomRef.on('value', snap => {
+      const dev = snap.val();
+      if (dev) applyParticipantDeviceState(dev);
+    });
+  }
+
+  // Short link creation without changing the share UI.
+  const oldPrepare = window.uxPrepareOnlineMode;
+  window.uxPrepareOnlineMode = function(){
+    if (typeof oldPrepare === 'function') oldPrepare.apply(this, arguments);
+    state.online = state.online || {};
+    state.online.mode = 'online';
+    state.online.role = 'researcher';
+    const link = buildShortParticipantLink();
+    const input = document.getElementById('ux-participant-link');
+    if (input) input.value = link;
+    try { if (typeof window.uxInitRoomBridge === 'function') window.uxInitRoomBridge(); } catch(e){}
+    startResearcherListening();
+    showToast?.('Short participant link created');
+    return link;
+  };
+
+  const oldCopy = window.uxCopyParticipantLink;
+  window.uxCopyParticipantLink = async function(){
+    const link = state?.online?.participantLink && !state.online.participantLink.includes('uxCtx=') ? state.online.participantLink : buildShortParticipantLink();
+    const input = document.getElementById('ux-participant-link');
+    if (input) input.value = link;
+    try { await navigator.clipboard.writeText(link); showToast?.('Short participant link copied'); }
+    catch(e){ if (input) { input.focus(); input.select(); } showToast?.('Copy the participant link from the field'); }
+    return link;
+  };
+
+  const oldEnterResearcher = window.uxEnterResearcherMeeting;
+  window.uxEnterResearcherMeeting = function(){
+    const result = typeof oldEnterResearcher === 'function' ? oldEnterResearcher.apply(this, arguments) : undefined;
+    state.online = state.online || {};
+    state.online.mode = 'online';
+    state.online.role = 'researcher';
+    saveRoomContext(roomId());
+    setTimeout(startResearcherListening, 250);
+    return result;
+  };
+
+  const oldParticipantStart = window.uxParticipantStartTesting;
+  window.uxParticipantStartTesting = async function(){
+    await loadRoomContext(roomId());
+    const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
+    setTimeout(startParticipantPublishing, 250);
+    return result;
+  };
+
+  const oldReady = window.uxParticipantReadySignal;
+  window.uxParticipantReadySignal = async function(){
+    const result = typeof oldReady === 'function' ? await oldReady.apply(this, arguments) : undefined;
+    state.online = state.online || {};
+    state.online.participantReady = true;
+    publishDeviceState({ ready:true });
+    startParticipantPublishing();
+    return result;
+  };
+
+  const oldToggle = window.toggleRecAndStartDevice;
+  window.toggleRecAndStartDevice = async function(type, el){
+    const result = typeof oldToggle === 'function' ? await oldToggle.apply(this, arguments) : undefined;
+    if (isParticipant()) {
+      setTimeout(() => publishDeviceState(), 80);
+      setTimeout(() => publishDeviceState(), 500);
+      setTimeout(() => publishDeviceState(), 1200);
+    }
+    return result;
+  };
+
+  const oldSetMicUI = window.setMicUI;
+  window.setMicUI = function(on){
+    const result = typeof oldSetMicUI === 'function' ? oldSetMicUI.apply(this, arguments) : undefined;
+    if (isParticipant()) setTimeout(() => publishDeviceState({ mic: !!state.micActive }), 80);
+    return result;
+  };
+
+  const oldStopMic = window.stopMic;
+  window.stopMic = function(){
+    const result = typeof oldStopMic === 'function' ? oldStopMic.apply(this, arguments) : undefined;
+    if (isParticipant()) setTimeout(() => publishDeviceState({ mic:false }), 80);
+    return result;
+  };
+
+  const oldStopScreen = window.stopScreenShare;
+  window.stopScreenShare = function(){
+    const result = typeof oldStopScreen === 'function' ? oldStopScreen.apply(this, arguments) : undefined;
+    if (isParticipant()) setTimeout(() => publishDeviceState({ screen:false }), 80);
+    return result;
+  };
+
+  const oldStartScreen = window.startScreenShare;
+  window.startScreenShare = async function(){
+    const stream = typeof oldStartScreen === 'function' ? await oldStartScreen.apply(this, arguments) : undefined;
+    if (isParticipant()) {
+      const s = state.screenStream || stream;
+      try { s?.getVideoTracks?.()[0]?.addEventListener('ended', () => setTimeout(() => publishDeviceState({ screen:false }), 100)); } catch(e){}
+      setTimeout(() => publishDeviceState({ screen:hasLiveTrack(state.screenStream || stream, 'video') }), 120);
+      setTimeout(() => publishDeviceState(), 700);
+    }
+    return stream;
+  };
+
+  // Load short-link context on participant URL. This allows URL without uxCtx.
+  document.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('uxMode') === 'online' && params.get('uxRole') === 'participant') {
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'participant';
+      state.online.roomId = params.get('uxRoom') || state.online.roomId || '';
+      loadRoomContext(state.online.roomId).then(() => {
+        try { renderActiveTasks?.(); updateReadiness?.(); } catch(e){}
+      });
+    }
+    if (state?.online?.mode === 'online' && state?.online?.role === 'researcher') startResearcherListening();
+  });
+
+  // Static Netlify API status: localhost health check is invalid online; use direct Gemini check/status.
+  window.checkBackendStatus = async function(){
+    const statusEl = document.getElementById('backend-status-text');
+    const hostedStatic = location.protocol === 'https:' && /netlify\.app|netlify\.global|localhost|127\.0\.0\.1/i.test(location.host) === false ? false : location.protocol === 'https:';
+    if (hostedStatic && typeof window.checkGeminiApiStatus === 'function') {
+      if (statusEl) {
+        statusEl.textContent = 'Checking API…';
+        statusEl.style.background = 'rgba(245,158,11,0.12)';
+        statusEl.style.color = '#f59e0b';
+      }
+      return await window.checkGeminiApiStatus();
+    }
+    if (typeof window.checkGeminiApiStatus === 'function') return await window.checkGeminiApiStatus();
+    if (statusEl) {
+      statusEl.textContent = 'API status unknown';
+      statusEl.style.background = 'rgba(107,107,140,0.12)';
+      statusEl.style.color = '#6b6b8c';
+    }
+    return false;
+  };
+
+  // Initial top-bar status should not say disconnected just because localhost backend is absent.
+  setTimeout(() => {
+    const statusEl = document.getElementById('backend-status-text');
+    const label = document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
+    if (label) label.textContent = 'AI Direct Mode';
+    if (statusEl && /Offline|Connected/.test(statusEl.textContent || '')) {
+      const q = state.apiQuotaStatus || { status:'unknown' };
+      if (q.status === 'available') {
+        statusEl.textContent = 'API available';
+        statusEl.style.background = 'rgba(34,197,94,0.12)';
+        statusEl.style.color = '#22c55e';
+      } else if (q.status === 'exhausted') {
+        statusEl.textContent = 'API quota exhausted';
+        statusEl.style.background = 'rgba(239,68,68,0.10)';
+        statusEl.style.color = '#ef4444';
+      } else {
+        statusEl.textContent = 'API status unknown';
+        statusEl.style.background = 'rgba(107,107,140,0.12)';
+        statusEl.style.color = '#6b6b8c';
+      }
+    }
+    try { updateTokenSessionEstimate?.(); } catch(e){}
+  }, 900);
+
+  window.uxNetlifyOnlinePatch = {
+    buildShortParticipantLink,
+    saveRoomContext,
+    loadRoomContext,
+    publishDeviceState,
+    startResearcherListening
+  };
 })();
 </script>
 
