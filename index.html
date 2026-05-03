@@ -3609,7 +3609,7 @@ state.visualObservations = state.visualObservations || [];
 state.visualCaptureInterval = state.visualCaptureInterval || null;
 state.visualCaptureBusy = false;
 
-const GEMINI_DIRECT_MODEL = 'gemini-2.5-flash';
+const GEMINI_DIRECT_MODEL = 'gemini-1.5-flash';
 
 
 /* ══════════════════════
@@ -12522,7 +12522,7 @@ Format:
 ══════════════════════════════════════ */
 (function(){
   function getGeminiModel(){
-    return window.GEMINI_DIRECT_MODEL || (typeof GEMINI_DIRECT_MODEL !== 'undefined' ? GEMINI_DIRECT_MODEL : 'gemini-2.5-flash');
+    return window.GEMINI_DIRECT_MODEL || (typeof GEMINI_DIRECT_MODEL !== 'undefined' ? GEMINI_DIRECT_MODEL : 'gemini-1.5-flash');
   }
   function getGeminiKey(){
     return window.GEMINI_API_KEY || (typeof GEMINI_API_KEY !== 'undefined' ? GEMINI_API_KEY : '');
@@ -12643,6 +12643,145 @@ Format:
     const label = document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
     if (label) label.textContent = 'AI Direct Mode';
     setTimeout(function(){ window.checkGeminiApiStatus(); }, 900);
+  });
+})();
+</script>
+
+
+<script id="uxlens-final-netlify-gemini-403-model-fix">
+/* ══════════════════════════════════════
+   UXLENS FINAL SAFE PATCH: Netlify Gemini 403 + model fallback fix
+   Scope: API status + Gemini request routing only.
+   No UI layout, participant view, researcher sync, screen-share, transcript, or analysis code changed.
+══════════════════════════════════════ */
+(function(){
+  const UXLENS_GEMINI_MODELS = [
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-latest',
+    'gemini-2.0-flash'
+  ];
+
+  function getGeminiKeySafe(){
+    try { return window.GEMINI_API_KEY || (typeof GEMINI_API_KEY !== 'undefined' ? GEMINI_API_KEY : ''); }
+    catch(e){ return ''; }
+  }
+
+  function statusBadge(){ return document.getElementById('backend-status-text'); }
+  function statusRight(){ return document.getElementById('token-session-estimate'); }
+
+  function paintStatus(kind, text, detail){
+    let bg='rgba(107,107,140,0.12)', color='#6b6b8c', badge='API status unknown';
+    if(kind === 'checking'){ bg='rgba(245,158,11,0.12)'; color='#f59e0b'; badge='Checking API…'; }
+    if(kind === 'ok'){ bg='rgba(34,197,94,0.12)'; color='#22c55e'; badge='✓ AI Connected'; }
+    if(kind === 'warn'){ bg='rgba(245,158,11,0.12)'; color='#f59e0b'; badge='API needs setup'; }
+    if(kind === 'bad'){ bg='rgba(239,68,68,0.10)'; color='#ef4444'; badge='API status failed'; }
+
+    const b=statusBadge();
+    if(b){ b.textContent=badge; b.style.background=bg; b.style.color=color; }
+
+    const r=statusRight();
+    if(r){
+      r.innerHTML='<span style="font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:99px;background:'+bg+';color:'+color+'">'+(text || badge)+'</span>';
+      r.title=detail || text || badge;
+    }
+  }
+
+  function classifyGeminiFailure(status, message, model){
+    const msg=String(message || '');
+    if(!navigator.onLine) return {kind:'bad', text:'No internet connection', detail:msg};
+    if(/Failed to fetch|NetworkError|CORS/i.test(msg)) return {kind:'bad', text:'Network/CORS blocked', detail:msg};
+    if(status === 400 && /api key not valid|API_KEY_INVALID|key not valid/i.test(msg)) return {kind:'bad', text:'Gemini API key invalid', detail:msg};
+    if(status === 403 && /API_KEY_SERVICE_BLOCKED|service.*disabled|has not been used|not enabled|SERVICE_DISABLED/i.test(msg)) return {kind:'warn', text:'Enable Generative Language API', detail:msg};
+    if(status === 403 && /referer|referrer|HTTP referrer|website restriction|API key restrictions|PERMISSION_DENIED|permission|denied|not authorized|blocked/i.test(msg)) return {kind:'warn', text:'Add Netlify domain in API key restrictions', detail:msg};
+    if(status === 403) return {kind:'warn', text:'Google blocked this API key/domain', detail:msg};
+    if(status === 404 || /model.*not.*found|not found|not supported/i.test(msg)) return {kind:'warn', text:'Model not available: '+model, detail:msg};
+    if(status === 429 || /quota|rate.?limit|RESOURCE_EXHAUSTED|free_tier_requests/i.test(msg)) return {kind:'bad', text:'Gemini quota exhausted', detail:msg};
+    return {kind:'bad', text:'Gemini API error: '+(msg || status), detail:msg};
+  }
+
+  async function requestGeminiWithFallback(parts, maxTokens, temperature){
+    const key=getGeminiKeySafe();
+    if(!key){
+      paintStatus('bad','Gemini API key missing','No GEMINI_API_KEY found in this file.');
+      return {ok:false,text:null,error:'Gemini API key missing'};
+    }
+
+    let lastError=null;
+    for(const model of UXLENS_GEMINI_MODELS){
+      try{
+        const resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key),{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            contents:[{parts}],
+            generationConfig:{maxOutputTokens:maxTokens || 1500, temperature:temperature ?? 0.4, topP:0.9}
+          })
+        });
+        const data=await resp.json().catch(function(){ return {}; });
+        try{ if(typeof trackGeminiUsage === 'function') trackGeminiUsage(data); }catch(e){}
+
+        if(resp.ok){
+          window.UXLENS_ACTIVE_GEMINI_MODEL=model;
+          paintStatus('ok','Gemini API available · '+model,'Gemini responded successfully from this domain using '+model+'.');
+          return {ok:true,text:data?.candidates?.[0]?.content?.parts?.[0]?.text || '',data,model};
+        }
+
+        const msg=data?.error?.message || resp.statusText || String(resp.status);
+        lastError={status:resp.status,msg,data,model};
+        console.warn('[UXLens Gemini] '+model+' failed:', resp.status, data);
+
+        // Try next model only for model availability/version issues.
+        // For domain restriction/key/service/quota errors, trying another model will not fix it.
+        if(!(resp.status === 404 || /model.*not.*found|not found|not supported|not available/i.test(msg))){
+          const c=classifyGeminiFailure(resp.status,msg,model);
+          paintStatus(c.kind,c.text,c.detail);
+          return {ok:false,text:null,error:msg,status:resp.status,data,model};
+        }
+      }catch(e){
+        lastError={status:0,msg:e && (e.message || e),data:null,model};
+        const c=classifyGeminiFailure(0,lastError.msg,model);
+        paintStatus(c.kind,c.text,c.detail);
+        return {ok:false,text:null,error:lastError.msg,status:0,model};
+      }
+    }
+
+    const c=classifyGeminiFailure(lastError?.status || 0,lastError?.msg || 'No Gemini model worked',lastError?.model || 'unknown');
+    paintStatus(c.kind,c.text,c.detail);
+    return {ok:false,text:null,error:lastError?.msg || 'No Gemini model worked',status:lastError?.status || 0,model:lastError?.model};
+  }
+
+  window.checkGeminiApiStatus = async function(){
+    paintStatus('checking','Checking Gemini API…','Testing Gemini from this deployed domain.');
+    const result=await requestGeminiWithFallback([{text:'Return only OK.'}],5,0);
+    try{
+      if(result.ok) showToast('Gemini API is available');
+      else showToast('API failed: '+String(result.error || 'check Google Cloud setup').slice(0,80));
+    }catch(e){}
+    return !!result.ok;
+  };
+
+  window.checkBackendStatus = window.checkGeminiApiStatus;
+
+  window.callGemini = async function(prompt,maxTokens){
+    const result=await requestGeminiWithFallback([{text:prompt}],maxTokens || 1500,0.4);
+    if(!result.ok){ try{ showToast('AI error: '+String(result.error || 'API failed').slice(0,80)); }catch(e){} return null; }
+    return result.text || null;
+  };
+
+  window.callGeminiVision = async function(prompt,imageBase64,maxTokens){
+    const cleanBase64=String(imageBase64 || '').replace(/^data:image\/\w+;base64,/,'');
+    const result=await requestGeminiWithFallback([
+      {text:prompt},
+      {inline_data:{mime_type:'image/jpeg',data:cleanBase64}}
+    ],maxTokens || 900,0.2);
+    if(!result.ok){ try{ showToast('Visual AI error: '+String(result.error || 'API failed').slice(0,80)); }catch(e){} return null; }
+    return result.text || null;
+  };
+
+  document.addEventListener('DOMContentLoaded',function(){
+    const label=document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
+    if(label) label.textContent='AI Direct Mode';
+    setTimeout(function(){ window.checkGeminiApiStatus(); },1000);
   });
 })();
 </script>
