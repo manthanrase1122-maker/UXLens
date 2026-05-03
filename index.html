@@ -1655,6 +1655,20 @@ body {
   border-radius: 99px;
 }
 
+
+/* ══════════════════════════════════════
+   UXLENS PATCH: Screen share preview aspect fix only
+   Keeps participant/researcher UI unchanged; prevents shared screen from being cropped/split.
+══════════════════════════════════════ */
+#screen-preview-card .webcam-box {
+  background: #111827 !important;
+  overflow: hidden !important;
+}
+#screen-preview-card #screen-vid {
+  object-fit: contain !important;
+  background: #111827 !important;
+}
+
 </style>
 </head>
 <body>
@@ -2108,7 +2122,7 @@ body {
       <div class="t-card" id="screen-preview-card" style="display:none">
         <div class="t-card-title">Screen Share Preview</div>
         <div class="webcam-box">
-          <video id="screen-vid" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;display:none"></video>
+          <video id="screen-vid" autoplay muted playsinline style="width:100%;height:100%;object-fit:contain;background:#111827;display:none"></video>
           <span class="screen-placeholder-text" style="color:var(--text-3);font-size:14px;font-weight:500">Screen Share Preview</span>
         </div>
       </div>
@@ -5107,6 +5121,29 @@ updateReadiness();
 ══════════════════════ */
 const startRecordingCaptureComposite1080 = startRecordingCapture;
 
+
+
+/* UXLENS PATCH: draw shared screen with contain-fit in composite recording */
+function drawVideoContain(ctx, video, canvasWidth, canvasHeight) {
+  if (!video || !video.videoWidth || !video.videoHeight) return;
+  const videoRatio = video.videoWidth / video.videoHeight;
+  const canvasRatio = canvasWidth / canvasHeight;
+  let drawW = canvasWidth;
+  let drawH = canvasHeight;
+  let dx = 0;
+  let dy = 0;
+  if (videoRatio > canvasRatio) {
+    drawW = canvasWidth;
+    drawH = Math.round(canvasWidth / videoRatio);
+    dy = Math.round((canvasHeight - drawH) / 2);
+  } else {
+    drawH = canvasHeight;
+    drawW = Math.round(canvasHeight * videoRatio);
+    dx = Math.round((canvasWidth - drawW) / 2);
+  }
+  ctx.drawImage(video, dx, dy, drawW, drawH);
+}
+
 function drawCompositeFrameStable() {
   const canvas = state.compositeCanvas;
   const ctx = state.compositeCtx;
@@ -5121,7 +5158,7 @@ function drawCompositeFrameStable() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   if (screenReady) {
-    ctx.drawImage(screenVid, 0, 0, canvas.width, canvas.height);
+    drawVideoContain(ctx, screenVid, canvas.width, canvas.height);
     if (webcamReady) {
       const pipW = Math.round(canvas.width * 0.23);
       const pipH = Math.round(pipW * 0.625);
