@@ -5082,11 +5082,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   updateTechComfortLabel();
 
-  // Direct Gemini mode: no backend health check needed
-  document.getElementById('backend-status-text').textContent = '✓ Connected';
-  document.getElementById('backend-status-text').style.background = 'rgba(34,197,94,0.12)';
-  document.getElementById('backend-status-text').style.color = '#22c55e';
+  // Direct Gemini mode — auto-check API on load so badge shows real status, not "unknown"
+  const _badge = document.getElementById('backend-status-text');
+  if (_badge) {
+    _badge.textContent = 'Checking AI…';
+    _badge.style.background = 'rgba(245,158,11,0.12)';
+    _badge.style.color = '#f59e0b';
+  }
   updateTokenSessionEstimate();
+  // Delay slightly so all patches are loaded before the check fires
+  setTimeout(async () => {
+    if (typeof checkGeminiApiStatus === 'function') {
+      await checkGeminiApiStatus();
+    }
+  }, 1200);
   const tokenEl = document.getElementById('token-session-estimate');
   if (tokenEl) {
     tokenEl.addEventListener('click', askGeminiTokenBudget);
@@ -12485,27 +12494,10 @@ Format:
     return false;
   };
 
-  // Initial top-bar status should not say disconnected just because localhost backend is absent.
+  // Initial top-bar: rename label. Don't overwrite "Checking AI…" — let the auto-check settle.
   setTimeout(() => {
-    const statusEl = document.getElementById('backend-status-text');
     const label = document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
     if (label) label.textContent = 'AI Direct Mode';
-    if (statusEl && /Offline|Connected/.test(statusEl.textContent || '')) {
-      const q = state.apiQuotaStatus || { status:'unknown' };
-      if (q.status === 'available') {
-        statusEl.textContent = 'API available';
-        statusEl.style.background = 'rgba(34,197,94,0.12)';
-        statusEl.style.color = '#22c55e';
-      } else if (q.status === 'exhausted') {
-        statusEl.textContent = 'API quota exhausted';
-        statusEl.style.background = 'rgba(239,68,68,0.10)';
-        statusEl.style.color = '#ef4444';
-      } else {
-        statusEl.textContent = 'API status unknown';
-        statusEl.style.background = 'rgba(107,107,140,0.12)';
-        statusEl.style.color = '#6b6b8c';
-      }
-    }
     try { updateTokenSessionEstimate?.(); } catch(e){}
   }, 900);
 
