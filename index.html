@@ -8495,6 +8495,8 @@ Format:
   let originalGenerateInsight = window.generateInsight;
   let originalSynthesize = window.synthesizeSessionAndGoAnalysis;
   let bc = null;
+  const uxSeenRoomEvents = new Set();
+  let uxRoomEventsRef = null;
 
   state.online = state.online || {
     mode: 'remote',
@@ -8516,27 +8518,68 @@ Format:
   function uxBuildParticipantLink(){
     const roomId = state.online.roomId || uxMakeRoomId();
     state.online.roomId = roomId;
-    const payload = uxEncodePayload({ study: state.study, p: state.p, createdAt: new Date().toISOString() });
+
+    const roomData = {
+      study: state.study,
+      p: state.p,
+      roomId,
+      createdAt: new Date().toISOString()
+    };
+
+    // Same-browser fallback. Useful for local testing.
+    try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify(roomData)); } catch(e){}
+
+    // Real online sharing. Full context goes to Firebase, not into the URL.
+    try {
+      if (window._uxFbDb) {
+        window._uxFbDb.ref('uxlens/rooms/' + roomId + '/context').set(roomData);
+      }
+    } catch(e) {
+      console.warn('[UXLens] Firebase context save failed:', e);
+    }
+
     const url = new URL(location.href.split('#')[0]);
     url.searchParams.set('uxRole','participant');
     url.searchParams.set('uxMode','online');
     url.searchParams.set('uxRoom',roomId);
-    if (payload) url.searchParams.set('uxCtx',payload);
+    url.searchParams.delete('uxCtx');
+
     state.online.participantLink = url.toString();
-    try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify({ study: state.study, p: state.p, roomId, createdAt: new Date().toISOString() })); } catch(e){}
     return state.online.participantLink;
   }
 
   function uxSendRoomEvent(type, payload = {}){
     const roomId = state.online.roomId;
     if (!roomId) return;
-    const event = { type, payload, roomId, at: new Date().toISOString(), sender: state.online.role || 'researcher' };
+    const event = {
+      id: 'evt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8),
+      type,
+      payload,
+      roomId,
+      at: new Date().toISOString(),
+      sender: state.online.role || 'researcher'
+    };
+
     try { localStorage.setItem(uxRoomKey(roomId) + '_event', JSON.stringify(event)); } catch(e){}
     if (bc) { try { bc.postMessage(event); } catch(e){} }
+
+    // Direct Firebase room events for reliable cross-device participant/researcher sync on Netlify.
+    try {
+      if (window._uxFbDb) {
+        window._uxFbDb.ref('uxlens/rooms/' + roomId + '/events').push(event);
+      }
+    } catch(e) {
+      console.warn('[UXLens] Firebase event send failed:', e);
+    }
   }
 
   function uxHandleRoomEvent(event){
     if (!event || event.roomId !== state.online.roomId) return;
+    if (event.id) {
+      if (uxSeenRoomEvents.has(event.id)) return;
+      uxSeenRoomEvents.add(event.id);
+      if (uxSeenRoomEvents.size > 300) uxSeenRoomEvents.clear();
+    }
     if (event.sender === state.online.role) return;
     const p = event.payload || {};
     if (event.type === 'participant-ready') {
@@ -8574,11 +8617,28 @@ Format:
         : new BroadcastChannel('uxlens-room-' + state.online.roomId);
       if (bc) bc.onmessage = e => uxHandleRoomEvent(e.data);
     } catch(e){}
-    // Storage listener as same-device fallback when Firebase is not configured
-    if (!window._uxFbDb) {
-      window.addEventListener('storage', e => {
-        if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
-      });
+
+    // Same-device fallback.
+    window.addEventListener('storage', e => {
+      if (e.key === uxRoomKey(state.online.roomId) + '_event') uxHandleRoomEvent(uxSafeJsonParse(e.newValue, null));
+    });
+
+    // Cross-device Firebase listener.
+    try {
+      if (window._uxFbDb) {
+        if (uxRoomEventsRef) { try { uxRoomEventsRef.off(); } catch(e){} }
+        uxRoomEventsRef = window._uxFbDb.ref('uxlens/rooms/' + state.online.roomId + '/events');
+        const startAt = Date.now() - 15000;
+        uxRoomEventsRef.limitToLast(80).on('child_added', snap => {
+          const event = snap.val();
+          if (!event) return;
+          const t = Date.parse(event.at || '') || 0;
+          if (t && t < startAt) return;
+          uxHandleRoomEvent(event);
+        });
+      }
+    } catch(e) {
+      console.warn('[UXLens] Firebase room listener failed:', e);
     }
   }
 
@@ -8844,16 +8904,33 @@ Format:
     };
   }
 
-  function uxLoadParticipantContextFromUrl(){
+  async function uxLoadParticipantContextFromUrl(){
     const params = new URLSearchParams(location.search);
     if (params.get('uxMode') !== 'online' || params.get('uxRole') !== 'participant') return false;
     const roomId = params.get('uxRoom') || uxMakeRoomId();
     state.online.mode = 'online';
     state.online.role = 'participant';
     state.online.roomId = roomId;
-    const payload = uxDecodePayload(params.get('uxCtx') || '');
-    const stored = uxSafeJsonParse(localStorage.getItem(uxRoomKey(roomId)), null);
-    const ctx = payload || stored || {};
+
+    let ctx = null;
+
+    // 1) Real online context from Firebase. This keeps the participant link short.
+    try {
+      if (window._uxFbDb) {
+        const snap = await window._uxFbDb.ref('uxlens/rooms/' + roomId + '/context').once('value');
+        ctx = snap.val();
+      }
+    } catch(e) {
+      console.warn('[UXLens] Firebase context load failed:', e);
+    }
+
+    // 2) Same-browser fallback for local testing.
+    if (!ctx) ctx = uxSafeJsonParse(localStorage.getItem(uxRoomKey(roomId)), null);
+
+    // 3) Backward compatibility for older long links.
+    if (!ctx) ctx = uxDecodePayload(params.get('uxCtx') || '');
+
+    ctx = ctx || {};
     if (ctx.study) state.study = { ...state.study, ...ctx.study };
     if (ctx.p) state.p = { ...state.p, ...ctx.p };
     renderTasks?.();
@@ -8864,17 +8941,30 @@ Format:
     if (desc) desc.textContent = `You are joining ${state.study.projectName || 'a product'} usability test. Click Start Testing to enter the session. Mic and webcam are optional; screen share starts automatically when you click I’m Ready.`;
     if (lobby) lobby.classList.add('show');
     document.body.classList.add('ux-online-participant');
-    document.getElementById('page-title').textContent = 'Participant Lobby';
+    const pageTitle = document.getElementById('page-title');
+    if (pageTitle) pageTitle.textContent = 'Participant Lobby';
     uxInitRoomBridge();
     return true;
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
-    uxLoadParticipantContextFromUrl();
+  document.addEventListener('DOMContentLoaded', async () => {
+    await uxLoadParticipantContextFromUrl();
     uxUpdateResearcherActionGates();
     const startSessionBtn = document.querySelector('.start-session-btn');
     if (startSessionBtn) startSessionBtn.textContent = 'Start Testing Session';
   });
+
+  window.uxSendParticipantDeviceSnapshot = function(payload){
+    if (!state.online || state.online.mode !== 'online' || state.online.role !== 'participant') return;
+    if (!payload) return;
+    ['screen','mic','webcam'].forEach(k => {
+      uxSendRoomEvent('participant-device', {
+        device: k,
+        label: k === 'screen' ? 'screen share' : (k === 'mic' ? 'mic/audio' : 'webcam'),
+        enabled: !!payload[k]
+      });
+    });
+  };
 
   window.uxDebugOnlineState = function(){ return JSON.parse(JSON.stringify(state.online)); };
 })();
@@ -10070,6 +10160,10 @@ Format:
         at: new Date().toISOString(),
         sender: 'participant'
       }));
+      // Netlify / different-device fallback: publish a lightweight latest frame to Firebase.
+      if (window._uxFbDb) {
+        window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest').set(payload);
+      }
     } catch(e) {
       console.warn('UXLens screen preview publish failed:', e);
     }
@@ -10091,9 +10185,18 @@ Format:
     if (!isResearcher() || !roomId()) return;
     ensureResearcherScreenUI();
     const payload = safeParse(localStorage.getItem(key()));
-    if (!payload || payload.roomId !== roomId() || !payload.frame) return;
-    if (Date.now() - Number(payload.at || 0) > 9000) return;
-    setResearcherFrame(payload.frame, payload);
+    if (payload && payload.roomId === roomId() && payload.frame && Date.now() - Number(payload.at || 0) <= 9000) {
+      setResearcherFrame(payload.frame, payload);
+      return;
+    }
+    if (window._uxFbDb) {
+      window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest').once('value').then(snap => {
+        const fbPayload = snap.val();
+        if (!fbPayload || fbPayload.roomId !== roomId() || !fbPayload.frame) return;
+        if (Date.now() - Number(fbPayload.at || 0) > 9000) return;
+        setResearcherFrame(fbPayload.frame, fbPayload);
+      }).catch(e => console.warn('[UXLens] Firebase screen pull failed:', e));
+    }
   }
 
   function startPulling(){
@@ -10102,6 +10205,16 @@ Format:
     ensureResearcherScreenUI();
     pullFrameNow();
     pullTimer = setInterval(pullFrameNow, PULL_MS);
+    if (window._uxFbDb && roomId()) {
+      try {
+        const ref = window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/screen/latest');
+        ref.off();
+        ref.on('value', snap => {
+          const payload = snap.val();
+          if (payload && payload.roomId === roomId() && payload.frame) setResearcherFrame(payload.frame, payload);
+        });
+      } catch(e) { console.warn('[UXLens] Firebase screen listener failed:', e); }
+    }
   }
 
   function stopPulling(){
@@ -11311,6 +11424,10 @@ Format:
     try { localStorage.setItem(key(DEVICE_SUFFIX), JSON.stringify(payload)); } catch(e) {}
     // Push via Firebase sync channel so researcher sees it on a different device
     if (window._uxPostSync) try { window._uxPostSync('participant-device-state', payload); } catch(e) {}
+    // Also notify the main online room bridge so the researcher status chips update instantly.
+    if (typeof window.uxSendParticipantDeviceSnapshot === 'function') {
+      try { window.uxSendParticipantDeviceSnapshot(payload); } catch(e) {}
+    }
   }
 
   // Speech recognition restart fix: participant mic should keep transcribing even when researcher controls recording.
@@ -11395,6 +11512,7 @@ Format:
             state.screenStream = null;
             document.getElementById('chk-screen')?.classList.remove('checked');
             document.getElementById('rec-screen')?.classList.remove('active');
+            if (typeof publishDeviceStateNow === 'function') publishDeviceStateNow();
           });
         } catch(e) {
           console.error('[UXLens] Screen share failed:', e);
