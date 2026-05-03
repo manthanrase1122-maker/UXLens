@@ -12511,5 +12511,141 @@ Format:
 })();
 </script>
 
+
+
+<script id="uxlens-final-api-status-netlify-fix">
+/* ══════════════════════════════════════
+   UXLENS FINAL SAFE PATCH: Netlify API status only
+   - No UI/layout/participant changes
+   - Replaces vague API status unknown/failed with exact Gemini status
+   - Keeps existing callGemini / callGeminiVision behavior, only improves status handling
+══════════════════════════════════════ */
+(function(){
+  function getGeminiModel(){
+    return window.GEMINI_DIRECT_MODEL || (typeof GEMINI_DIRECT_MODEL !== 'undefined' ? GEMINI_DIRECT_MODEL : 'gemini-2.5-flash');
+  }
+  function getGeminiKey(){
+    return window.GEMINI_API_KEY || (typeof GEMINI_API_KEY !== 'undefined' ? GEMINI_API_KEY : '');
+  }
+  function statusBadge(){ return document.getElementById('backend-status-text'); }
+  function statusRight(){ return document.getElementById('token-session-estimate'); }
+  function setBadge(text, bg, color){
+    const badge = statusBadge();
+    if (badge) {
+      badge.textContent = text;
+      badge.style.background = bg;
+      badge.style.color = color;
+    }
+  }
+  function setRight(text, bg, color, title){
+    const el = statusRight();
+    if (!el) return;
+    el.innerHTML = '<span style="font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:99px;background:'+bg+';color:'+color+'">'+text+'</span>';
+    el.title = title || text;
+  }
+  function setApiUi(kind, text, detail){
+    let bg = 'rgba(107,107,140,0.12)', color = '#6b6b8c', badge = 'API status unknown';
+    if (kind === 'checking') { bg='rgba(245,158,11,0.12)'; color='#f59e0b'; badge='Checking API…'; }
+    if (kind === 'ok') { bg='rgba(34,197,94,0.12)'; color='#22c55e'; badge='✓ AI Connected'; }
+    if (kind === 'warn') { bg='rgba(245,158,11,0.12)'; color='#f59e0b'; badge='API needs setup'; }
+    if (kind === 'bad') { bg='rgba(239,68,68,0.10)'; color='#ef4444'; badge='API status failed'; }
+    setBadge(badge, bg, color);
+    setRight(text || badge, bg, color, detail || text || badge);
+  }
+  function classifyGeminiError(status, msg){
+    const m = String(msg || '');
+    if (!navigator.onLine) return {kind:'bad', text:'No internet connection', detail:m};
+    if (status === 400 && /api key not valid|API_KEY_INVALID|key not valid/i.test(m)) return {kind:'bad', text:'Gemini API key invalid', detail:m};
+    if (status === 403 && /API key|referer|referrer|permission|denied|PERMISSION_DENIED|not authorized|blocked/i.test(m)) return {kind:'warn', text:'Add Netlify domain in API key restrictions', detail:m};
+    if (status === 429 || /quota|rate.?limit|RESOURCE_EXHAUSTED|free_tier_requests/i.test(m)) return {kind:'bad', text:'Gemini quota exhausted', detail:m};
+    if (/Failed to fetch|NetworkError|CORS/i.test(m)) return {kind:'bad', text:'Network/CORS blocked', detail:m};
+    return {kind:'bad', text:'Gemini API error: '+(m || status), detail:m};
+  }
+  async function geminiRequest(parts, maxTokens, temperature){
+    const key = getGeminiKey();
+    const model = getGeminiModel();
+    if (!key) {
+      setApiUi('bad', 'Gemini API key missing', 'Add GEMINI_API_KEY in the file or use a backend function.');
+      return { ok:false, text:null, error:'Gemini API key missing' };
+    }
+    const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        contents:[{parts}],
+        generationConfig:{ maxOutputTokens:maxTokens || 1500, temperature: temperature ?? 0.4, topP:0.9 }
+      })
+    });
+    const data = await resp.json().catch(() => ({}));
+    try { if (typeof trackGeminiUsage === 'function') trackGeminiUsage(data); } catch(e){}
+    if (!resp.ok) {
+      const msg = data?.error?.message || resp.statusText || String(resp.status);
+      const c = classifyGeminiError(resp.status, msg);
+      setApiUi(c.kind, c.text, c.detail);
+      console.error('[UXLens API Status]', resp.status, data);
+      return { ok:false, text:null, error:msg, status:resp.status, data };
+    }
+    setApiUi('ok', 'Gemini API available', 'Gemini responded successfully from this Netlify domain.');
+    return { ok:true, text:data?.candidates?.[0]?.content?.parts?.[0]?.text || '', data };
+  }
+
+  window.checkGeminiApiStatus = async function(){
+    setApiUi('checking', 'Checking Gemini API…', 'Testing the same direct Gemini request used by UXLens.');
+    try {
+      const r = await geminiRequest([{text:'Return only OK.'}], 5, 0);
+      if (r.ok) { try { showToast('Gemini API is available'); } catch(e){} return true; }
+      try { showToast(r.error ? 'API failed: '+String(r.error).slice(0,70) : 'API status failed'); } catch(e){}
+      return false;
+    } catch(e) {
+      const c = classifyGeminiError(0, e && (e.message || e));
+      setApiUi(c.kind, c.text, c.detail);
+      console.error('[UXLens API Status] network error', e);
+      try { showToast(c.text); } catch(_){}
+      return false;
+    }
+  };
+
+  window.checkBackendStatus = window.checkGeminiApiStatus;
+
+  window.callGemini = async function(prompt, maxTokens){
+    try {
+      const r = await geminiRequest([{text:prompt}], maxTokens || 1500, 0.4);
+      if (!r.ok) { try { showToast('AI error: '+String(r.error || 'API failed').slice(0,80)); } catch(e){} return null; }
+      return r.text || null;
+    } catch(e) {
+      const c = classifyGeminiError(0, e && (e.message || e));
+      setApiUi(c.kind, c.text, c.detail);
+      console.error('[UXLens Gemini] error', e);
+      try { showToast(c.text); } catch(_){}
+      return null;
+    }
+  };
+
+  window.callGeminiVision = async function(prompt, imageBase64, maxTokens){
+    try {
+      const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
+      const r = await geminiRequest([
+        {text:prompt},
+        {inline_data:{mime_type:'image/jpeg', data:cleanBase64}}
+      ], maxTokens || 900, 0.2);
+      if (!r.ok) { try { showToast('Visual AI error: '+String(r.error || 'API failed').slice(0,80)); } catch(e){} return null; }
+      return r.text || null;
+    } catch(e) {
+      const c = classifyGeminiError(0, e && (e.message || e));
+      setApiUi(c.kind, c.text, c.detail);
+      console.error('[UXLens Vision] error', e);
+      try { showToast(c.text); } catch(_){}
+      return null;
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    const label = document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
+    if (label) label.textContent = 'AI Direct Mode';
+    setTimeout(function(){ window.checkGeminiApiStatus(); }, 900);
+  });
+})();
+</script>
+
 </body>
 </html>
