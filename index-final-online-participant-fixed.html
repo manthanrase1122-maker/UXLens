@@ -2326,7 +2326,7 @@ body {
 
   /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
   const UXLENS_FB_CONFIG = {
-  apiKey: "AIzaSyBti_NgPevmEkzvV-2_ghBJ5UL4TCkkbVU",
+  apiKey: "PASTE_KEY_IN_NETLIFY_ENV_ONLY",
   authDomain: "uxlens-735af.firebaseapp.com",
   databaseURL: "https://uxlens-735af-default-rtdb.firebaseio.com",
   projectId: "uxlens-735af",
@@ -8730,26 +8730,7 @@ Format:
     else switchPhase('testing');
   };
 
-  window.uxParticipantDecline = function(){
-    try { uxSendRoomEvent('participant-left'); } catch(e) {}
-
-    // Stop participant media cleanly, but do not redirect back to researcher onboarding.
-    try { if (state.micActive && typeof stopMic === 'function') stopMic(); } catch(e) {}
-    try { if (state.screenStream && typeof stopScreenShare === 'function') stopScreenShare(); } catch(e) {}
-    try {
-      if (state.webcamStream) state.webcamStream.getTracks().forEach(t => t.stop());
-      state.webcamStream = null;
-    } catch(e) {}
-    try {
-      const vid = document.getElementById('webcam-vid');
-      if (vid) { vid.pause?.(); vid.srcObject = null; vid.style.display = 'none'; }
-    } catch(e) {}
-
-    // Browsers often block window.close() unless the tab was script-opened, so show a closed state first.
-    document.body.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Plus Jakarta Sans,Arial,sans-serif;background:#f7f4ff;color:#1a1a30;text-align:center;padding:24px"><div><h2 style="margin-bottom:8px">Session closed</h2><p style="color:#6b6b8c">You can close this tab now.</p></div></div>';
-    try { window.open('', '_self'); window.close(); } catch(e) {}
-    return false;
-  };
+  window.uxParticipantDecline = function(){ uxSendRoomEvent('participant-left'); location.href = location.href.split('?')[0]; };
 
   function uxSetParticipantOptionUI(type, enabled){
     state.recOpts[type] = !!enabled;
@@ -8761,13 +8742,7 @@ Format:
 
   window.uxParticipantStartTesting = function(){
     const lobby = document.getElementById('ux-participant-lobby');
-    if (lobby) {
-      lobby.classList.remove('show');
-      lobby.style.display = 'none';
-      lobby.style.pointerEvents = 'none';
-    }
-
-    // Keep the working index-2 media flow intact. This only forces the participant testing view open.
+    if (lobby) lobby.classList.remove('show');
     uxSetMode('online');
     state.online.role = 'participant';
     state.online.participantReady = false;
@@ -8775,28 +8750,12 @@ Format:
     uxSetParticipantOptionUI('webcam', false);
     uxSetParticipantOptionUI('mic', false);
     uxSetParticipantOptionUI('screen', false);
-
-    try { uxInitRoomBridge(); } catch(e) { console.warn('[UXLens] room bridge skipped:', e); }
-
-    try {
-      if (originalSwitchPhase) originalSwitchPhase('testing');
-      else switchPhase('testing');
-    } catch(e) {
-      document.querySelectorAll('.phase').forEach(el => el.classList.remove('active'));
-      document.getElementById('phase-testing')?.classList.add('active');
-    }
-
-    try { uxApplyTestingRole('participant'); } catch(e) { console.warn('[UXLens] participant role UI skipped:', e); }
-    try { renderActiveTasks?.(); } catch(e) {}
-    try { uxUpdateOnlineStatusUI?.(); } catch(e) {}
-
-    const title = document.getElementById('page-title');
-    if (title) title.textContent = 'Participant Testing';
-    const timer = document.getElementById('timer-badge');
-    if (timer) timer.style.display = '';
-
+    uxInitRoomBridge();
+    originalSwitchPhase ? originalSwitchPhase('testing') : switchPhase('testing');
+    uxApplyTestingRole('participant');
+    renderActiveTasks?.();
+    uxUpdateOnlineStatusUI();
     showToast('Testing view opened. Turn on mic/webcam only if needed, then click I’m Ready.');
-    return false;
   };
 
   async function uxParticipantAutoStartScreenShare(){
@@ -12399,11 +12358,9 @@ Format:
   };
 
   const oldParticipantStart = window.uxParticipantStartTesting;
-  window.uxParticipantStartTesting = function(){
-    // Run the core function first so the lobby hides and the testing view shows immediately.
-    // Do NOT await loadRoomContext here — Firebase reads can block for seconds and freeze the button.
+  window.uxParticipantStartTesting = async function(){
+    await loadRoomContext(roomId());
     const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
-    loadRoomContext(roomId()).catch(function(){});
     setTimeout(startParticipantPublishing, 250);
     return result;
   };
@@ -12978,6 +12935,277 @@ Format:
   });
 
   console.log('[UXLens] Netlify API bridge active — Gemini calls are routed through Netlify Functions.');
+})();
+</script>
+
+
+
+<!-- ══════════════════════════════════════
+   UXLENS FINAL HOTFIX: Participant link + Start Testing + Leave
+   Scope: online participant link only. Does not change mic/webcam/screen-share logic from index-2.
+══════════════════════════════════════ -->
+<script id="uxlens-final-participant-link-start-leave-hotfix">
+(function(){
+  'use strict';
+
+  const ROOM_PREFIX = 'uxlens_online_room_';
+  const CTX_PREFIX  = 'uxlens_online_ctx_';
+
+  function qs(){ return new URLSearchParams(window.location.search || ''); }
+  function isParticipantUrl(){ const p = qs(); return p.get('uxMode') === 'online' && p.get('uxRole') === 'participant'; }
+  function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
+  function safeJson(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
+  function makeRoomId(){ return 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
+  function toast(msg){ try { if (typeof showToast === 'function') showToast(msg); } catch(e){} }
+
+  function getRoomId(){
+    const p = qs();
+    const fromUrl = p.get('uxRoom');
+    if (fromUrl) return fromUrl;
+    if (window.state && state.online && state.online.roomId) return state.online.roomId;
+    const next = makeRoomId();
+    if (window.state) {
+      state.online = state.online || {};
+      state.online.roomId = next;
+    }
+    return next;
+  }
+
+  async function saveContextForRoom(rid){
+    if (!rid || !window.state) return;
+    const ctx = {
+      study: state.study || {},
+      p: state.p || {},
+      roomId: rid,
+      createdAt: new Date().toISOString()
+    };
+    try { localStorage.setItem(CTX_PREFIX + rid, JSON.stringify(ctx)); } catch(e){}
+    try { localStorage.setItem(ROOM_PREFIX + rid, JSON.stringify(ctx)); } catch(e){}
+    if (window._uxFbDb) {
+      try {
+        await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/context').set(ctx);
+        await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/meta').update({ roomId: rid, updatedAt: Date.now() });
+      } catch(e) { console.warn('[UXLens] Firebase context save failed:', e); }
+    }
+  }
+
+  async function loadContextForRoom(rid){
+    if (!rid || !window.state) return null;
+    let ctx = safeJson(localStorage.getItem(CTX_PREFIX + rid), null) || safeJson(localStorage.getItem(ROOM_PREFIX + rid), null);
+    if (!ctx && window._uxFbDb) {
+      try {
+        const snap = await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/context').once('value');
+        ctx = snap.val();
+      } catch(e) { console.warn('[UXLens] Firebase context load failed:', e); }
+    }
+    if (ctx && ctx.study) state.study = Object.assign({}, state.study || {}, ctx.study);
+    if (ctx && ctx.p) state.p = Object.assign({}, state.p || {}, ctx.p);
+    try { if (typeof renderTasks === 'function') renderTasks(); } catch(e){}
+    try { if (typeof renderActiveTasks === 'function') renderActiveTasks(); } catch(e){}
+    try { if (typeof updateReadiness === 'function') updateReadiness(); } catch(e){}
+    return ctx;
+  }
+
+  function buildWorkingParticipantLink(){
+    const rid = getRoomId();
+    if (window.state) {
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'researcher';
+      state.online.roomId = rid;
+    }
+    // Always create a short same-page link. This avoids broken/too-long URLs on Netlify.
+    const url = new URL(window.location.origin + window.location.pathname);
+    url.searchParams.set('uxRole', 'participant');
+    url.searchParams.set('uxMode', 'online');
+    url.searchParams.set('uxRoom', rid);
+    if (window.state) state.online.participantLink = url.toString();
+    saveContextForRoom(rid);
+    return url.toString();
+  }
+
+  function showParticipantLobby(){
+    if (!isParticipantUrl()) return false;
+    const rid = getRoomId();
+    if (window.state) {
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'participant';
+      state.online.roomId = rid;
+    }
+    document.body.classList.add('ux-online-participant');
+    const lobby = document.getElementById('ux-participant-lobby');
+    if (lobby) {
+      lobby.classList.add('show');
+      lobby.style.display = 'flex';
+      lobby.style.pointerEvents = 'auto';
+    }
+    const title = document.getElementById('page-title');
+    if (title) title.textContent = 'Participant Lobby';
+    const desc = document.getElementById('ux-lobby-desc');
+    if (desc) desc.textContent = 'You are joining a UX testing session. Click Start Testing to enter the session. Mic and webcam are optional; screen share starts when you click I’m Ready.';
+    try { if (typeof window.uxInitRoomBridge === 'function') window.uxInitRoomBridge(); } catch(e){}
+    loadContextForRoom(rid).then(function(ctx){
+      if (ctx && ctx.study && desc) desc.textContent = `You are joining ${state.study.projectName || 'a product'} usability test. Click Start Testing to enter the session. Mic and webcam are optional; screen share starts when you click I’m Ready.`;
+    });
+    return true;
+  }
+
+  function setParticipantOptionUI(type, enabled){
+    if (!window.state) return;
+    state.recOpts = state.recOpts || { webcam:false, mic:false, screen:false };
+    state.recOpts[type] = !!enabled;
+    const chk = document.getElementById('chk-' + type);
+    const row = document.getElementById('rec-' + type);
+    if (chk) chk.classList.toggle('checked', !!enabled);
+    if (row) row.classList.toggle('active', !!enabled);
+  }
+
+  function publishParticipantState(extra){
+    if (!window.state || !state.online || state.online.role !== 'participant') return;
+    const rid = getRoomId();
+    const hasLive = function(stream, kind){
+      try { return !!stream && stream.getTracks().some(t => (!kind || t.kind === kind) && t.readyState === 'live'); } catch(e){ return false; }
+    };
+    const webcamVid = document.getElementById('webcam-vid');
+    const dev = Object.assign({
+      mic: !!state.micActive,
+      webcam: !!(webcamVid && webcamVid.srcObject && hasLive(webcamVid.srcObject, 'video')),
+      screen: hasLive(state.screenStream, 'video'),
+      ready: !!state.online.participantReady,
+      at: Date.now()
+    }, extra || {});
+    try { localStorage.setItem(ROOM_PREFIX + rid + '_participant_device_state', JSON.stringify(dev)); } catch(e){}
+    if (window._uxFbDb) {
+      try { window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').set(dev); } catch(e){}
+    }
+    try {
+      if (typeof window.uxMakeChannel === 'function') {
+        const ch = window.uxMakeChannel('uxlens-room-' + rid);
+        if (ch) {
+          ch.postMessage({ type:'participant-device-state', payload:dev, roomId:rid, sender:'participant', at:new Date().toISOString() });
+          ['mic','webcam','screen'].forEach(k => ch.postMessage({ type:'participant-device', payload:{ device:k, label:k === 'screen' ? 'screen share' : k, enabled:!!dev[k] }, roomId:rid, sender:'participant', at:new Date().toISOString() }));
+          setTimeout(() => { try { ch.close(); } catch(e){} }, 1200);
+        }
+      }
+    } catch(e){}
+  }
+
+  window.uxParticipantStartTesting = function(ev){
+    if (ev && ev.preventDefault) ev.preventDefault();
+    const rid = getRoomId();
+    if (window.state) {
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'participant';
+      state.online.roomId = rid;
+      state.online.participantReady = false;
+      state.online.participantDevices = { mic:false, webcam:false, screen:false };
+    }
+
+    const lobby = document.getElementById('ux-participant-lobby');
+    if (lobby) {
+      lobby.classList.remove('show');
+      lobby.style.display = 'none';
+      lobby.style.pointerEvents = 'none';
+    }
+
+    // Keep index-2 device flow: nothing auto-starts here. User controls mic/webcam; screen starts on I’m Ready.
+    setParticipantOptionUI('webcam', false);
+    setParticipantOptionUI('mic', false);
+    setParticipantOptionUI('screen', false);
+
+    document.querySelectorAll('.phase').forEach(el => el.classList.remove('active'));
+    const testing = document.getElementById('phase-testing');
+    if (testing) testing.classList.add('active');
+    document.querySelectorAll('.ps-btn').forEach(el => el.classList.remove('active'));
+    const testingBtn = document.querySelector('.ps-btn[data-phase="testing"]');
+    if (testingBtn) testingBtn.classList.add('active');
+
+    const title = document.getElementById('page-title');
+    if (title) title.textContent = 'Participant Testing';
+    const timer = document.getElementById('timer-badge');
+    if (timer) timer.style.display = '';
+
+    try { if (typeof window.uxInitRoomBridge === 'function') window.uxInitRoomBridge(); } catch(e){}
+    try { if (typeof window.uxApplyTestingRole === 'function') window.uxApplyTestingRole('participant'); } catch(e){}
+    try { if (typeof renderActiveTasks === 'function') renderActiveTasks(); } catch(e){}
+    try { if (typeof window.uxUpdateOnlineStatusUI === 'function') window.uxUpdateOnlineStatusUI(); } catch(e){}
+    publishParticipantState({ ready:false, mic:false, webcam:false, screen:false });
+    toast('Testing view opened. Turn on mic/webcam only if needed, then click I’m Ready.');
+    return false;
+  };
+
+  window.uxParticipantDecline = function(ev){
+    if (ev && ev.preventDefault) ev.preventDefault();
+    try { if (typeof window.uxSendRoomEvent === 'function') window.uxSendRoomEvent('participant-left'); } catch(e){}
+    publishParticipantState({ ready:false, mic:false, webcam:false, screen:false });
+    try { if (state.micActive && typeof stopMic === 'function') stopMic(); } catch(e){}
+    try { if (state.screenStream && typeof stopScreenShare === 'function') stopScreenShare(); } catch(e){}
+    try {
+      const webcamVid = document.getElementById('webcam-vid');
+      if (webcamVid && webcamVid.srcObject) webcamVid.srcObject.getTracks().forEach(t => t.stop());
+      if (webcamVid) { webcamVid.pause && webcamVid.pause(); webcamVid.srcObject = null; webcamVid.style.display = 'none'; }
+      if (state.webcamStream) state.webcamStream.getTracks().forEach(t => t.stop());
+      state.webcamStream = null;
+    } catch(e){}
+    document.body.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Plus Jakarta Sans,Arial,sans-serif;background:#f7f4ff;color:#1a1a30;text-align:center;padding:24px"><div><h2 style="margin-bottom:8px">Session closed</h2><p style="color:#6b6b8c">You can close this tab now.</p></div></div>';
+    try { window.open('', '_self'); window.close(); } catch(e){}
+    return false;
+  };
+
+  // Keep the original I’m Ready media logic, but publish status after it runs.
+  const oldReady = window.uxParticipantReadySignal;
+  window.uxParticipantReadySignal = async function(){
+    const result = typeof oldReady === 'function' ? await oldReady.apply(this, arguments) : undefined;
+    if (window.state && state.online && state.online.role === 'participant') {
+      state.online.participantReady = !!(state.screenStream && state.screenStream.getVideoTracks && state.screenStream.getVideoTracks().some(t => t.readyState === 'live'));
+      publishParticipantState({ ready:!!state.online.participantReady });
+      setTimeout(() => publishParticipantState(), 700);
+    }
+    return result;
+  };
+
+  const oldPrepare = window.uxPrepareOnlineMode;
+  window.uxPrepareOnlineMode = function(){
+    const result = typeof oldPrepare === 'function' ? oldPrepare.apply(this, arguments) : undefined;
+    const link = buildWorkingParticipantLink();
+    const input = document.getElementById('ux-participant-link');
+    const share = document.getElementById('ux-online-share-box');
+    if (input) input.value = link;
+    if (share) share.classList.add('show');
+    toast('Participant link created');
+    return result;
+  };
+
+  window.uxCopyParticipantLink = async function(){
+    const link = buildWorkingParticipantLink();
+    const input = document.getElementById('ux-participant-link');
+    if (input) input.value = link;
+    try { await navigator.clipboard.writeText(link); toast('Participant link copied'); }
+    catch(e){ if (input) { input.focus(); input.select(); } toast('Copy the participant link from the field'); }
+    return link;
+  };
+
+  function attachDirectButtonHandlers(){
+    const lobby = document.getElementById('ux-participant-lobby');
+    if (lobby) {
+      const buttons = lobby.querySelectorAll('button');
+      buttons.forEach(btn => {
+        const txt = (btn.textContent || '').trim().toLowerCase();
+        if (txt === 'start testing') btn.onclick = window.uxParticipantStartTesting;
+        if (txt === 'leave') btn.onclick = window.uxParticipantDecline;
+      });
+    }
+  }
+
+  function boot(){
+    attachDirectButtonHandlers();
+    if (isParticipantUrl()) showParticipantLobby();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
 })();
 </script>
 
