@@ -2326,13 +2326,13 @@ body {
 
   /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
   const UXLENS_FB_CONFIG = {
-  apiKey: "AIzaSyDCuAheKyctLei2khA9ijbPKEzTa9TfRDA",
-  authDomain: "uxlens-63312.firebaseapp.com",
-  projectId: "uxlens-63312",
-  storageBucket: "uxlens-63312.firebasestorage.app",
-  messagingSenderId: "835547455529",
-  appId: "1:835547455529:web:3b31e60d48b0e7325a3c38",
-  measurementId: "G-4MT6N5GLNM"
+  apiKey: "AIzaSyBti_NgPevmEkzvV-2_ghBJ5UL4TCkkbVU",
+  authDomain: "uxlens-735af.firebaseapp.com",
+  databaseURL: "https://uxlens-735af-default-rtdb.firebaseio.com",
+  projectId: "uxlens-735af",
+  storageBucket: "uxlens-735af.firebasestorage.app",
+  messagingSenderId: "983927198291",
+  appId: "1:983927198291:web:e9edf153a06110d675eca6"
 };
   /* ── 2. FIREBASE INIT ─────────────────────────────────────────────── */
   window._uxFbDb = null;
@@ -13206,6 +13206,240 @@ Format:
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
+})();
+</script>
+
+
+
+<!-- ══════════════════════════════════════
+   UXLENS FINAL NETLIFY LIVE SYNC FIX
+   Purpose: robust participant ↔ researcher sync on Netlify using Firebase Realtime Database.
+   Scope: only online sync/status/transcript mirror. Does not change UI, media permissions, or existing recording logic.
+══════════════════════════════════════ -->
+<script id="uxlens-final-netlify-live-sync-fix">
+(function(){
+  'use strict';
+
+  const ROOT = 'uxlens/rooms/';
+  let activeRoom = '';
+  let liveDeviceRef = null;
+  let liveTranscriptRef = null;
+  let devicePublishTimer = null;
+  let transcriptSeen = new Set();
+  let lastDeviceJSON = '';
+
+  function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
+  function rid(){
+    try {
+      return (window.state && state.online && state.online.roomId)
+        || new URLSearchParams(location.search || '').get('uxRoom')
+        || '';
+    } catch(e){ return ''; }
+  }
+  function isOnline(){ return !!(window.state && state.online && state.online.mode === 'online'); }
+  function isParticipant(){ return isOnline() && state.online.role === 'participant'; }
+  function isResearcher(){ return isOnline() && state.online.role === 'researcher'; }
+  function hasLiveTrack(stream, kind){
+    try { return !!stream && stream.getTracks().some(t => (!kind || t.kind === kind) && t.readyState === 'live'); }
+    catch(e){ return false; }
+  }
+  function getWebcamStream(){
+    const vid = document.getElementById('webcam-vid');
+    return (window.state && state.webcamStream) || (vid && vid.srcObject) || null;
+  }
+  function devicePayload(){
+    return {
+      mic: !!(window.state && state.micActive),
+      screen: !!(window.state && hasLiveTrack(state.screenStream, 'video')),
+      webcam: hasLiveTrack(getWebcamStream(), 'video'),
+      ready: !!(window.state && state.online && state.online.participantReady),
+      at: Date.now()
+    };
+  }
+  function updateChip(id, label, on){
+    const chip = document.getElementById(id);
+    if (!chip) return;
+    chip.className = chip.className.replace(/\b(on|off)\b/g, '').trim() + ' ' + (on ? 'on' : 'off');
+    if (chip.classList && chip.classList.contains('ux-online-device-pill')) chip.textContent = on ? 'ON' : 'OFF';
+    else chip.textContent = label + (on ? ' on' : ' off');
+  }
+  function applyDeviceToResearcher(payload){
+    if (!payload || !window.state || !state.online) return;
+    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
+    state.online.participantDevices.mic = !!payload.mic;
+    state.online.participantDevices.webcam = !!payload.webcam;
+    state.online.participantDevices.screen = !!payload.screen;
+    state.online.participantReady = !!payload.ready || !!payload.screen || !!payload.mic || !!payload.webcam;
+
+    updateChip('ux-chip-mic', 'Mic', !!payload.mic);
+    updateChip('ux-chip-webcam', 'Webcam', !!payload.webcam);
+    updateChip('ux-chip-screen', 'Screen share', !!payload.screen);
+    updateChip('ux-device-mic', 'Mic', !!payload.mic);
+    updateChip('ux-device-webcam', 'Webcam', !!payload.webcam);
+    updateChip('ux-device-screen', 'Screen Share', !!payload.screen);
+
+    const sub = document.getElementById('ux-meeting-sub');
+    if (sub) sub.textContent = state.online.participantReady
+      ? 'Participant is connected. Device status is syncing live from Netlify/Firebase.'
+      : 'Waiting for participant device status…';
+    const dot = document.getElementById('ux-meeting-dot');
+    if (dot) dot.className = 'ux-status-dot' + (state.online.participantReady ? ' on' : '');
+    if (typeof window.uxUpdateOnlineStatusUI === 'function') {
+      try { window.uxUpdateOnlineStatusUI(); } catch(e){}
+    }
+  }
+  async function publishDevice(){
+    if (!isParticipant() || !window._uxFbDb || !rid()) return;
+    const payload = devicePayload();
+    const json = JSON.stringify(payload);
+    if (json === lastDeviceJSON) return;
+    lastDeviceJSON = json;
+    try {
+      await window._uxFbDb.ref(ROOT + safeRoomKey(rid()) + '/live/deviceState').set(payload);
+      if (window.state && state.online) {
+        state.online.participantDevices = state.online.participantDevices || {};
+        state.online.participantDevices.mic = payload.mic;
+        state.online.participantDevices.webcam = payload.webcam;
+        state.online.participantDevices.screen = payload.screen;
+      }
+    } catch(e){ console.warn('[UXLens] live device sync failed', e); }
+  }
+  function ensureParticipantPublisher(){
+    if (!isParticipant()) return;
+    if (!devicePublishTimer) devicePublishTimer = setInterval(publishDevice, 600);
+    publishDevice();
+  }
+  function appendTranscriptOnResearcher(payload){
+    if (!isResearcher() || !payload || !payload.text) return;
+    if (payload.id && transcriptSeen.has(payload.id)) return;
+    if (payload.id) transcriptSeen.add(payload.id);
+    const box = document.getElementById('transcript-box');
+    if (!box) return;
+    const ph = box.querySelector('div[style]');
+    if (ph && /Start recording|Transcript cleared|live transcript/i.test(ph.textContent || '')) ph.remove();
+    const d = document.createElement('div');
+    d.className = 'transcript-line ux-participant-transcript-line';
+    d.dataset.participant = 'true';
+    d.innerHTML = `<span class="ts-ts">[${(payload.time || '').replace(/[<>]/g,'')}]</span> ${String(payload.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}`;
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+  }
+  function publishTranscript(text){
+    if (!isParticipant() || !window._uxFbDb || !rid()) return;
+    const clean = String(text || '').trim();
+    if (!clean || /^\[(listening|speech warning|speech error|failed|error processing)/i.test(clean)) return;
+    const payload = {
+      id: Date.now() + '-' + Math.random().toString(36).slice(2),
+      text: clean,
+      time: (typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : ''),
+      at: Date.now()
+    };
+    try { window._uxFbDb.ref(ROOT + safeRoomKey(rid()) + '/live/transcripts').push(payload); }
+    catch(e){ console.warn('[UXLens] live transcript sync failed', e); }
+  }
+  function ensureResearcherListeners(){
+    if (!isResearcher() || !window._uxFbDb || !rid()) return;
+    const room = safeRoomKey(rid());
+    if (activeRoom === room && liveDeviceRef && liveTranscriptRef) return;
+
+    if (liveDeviceRef) { try { liveDeviceRef.off(); } catch(e){} }
+    if (liveTranscriptRef) { try { liveTranscriptRef.off(); } catch(e){} }
+    activeRoom = room;
+    transcriptSeen.clear();
+
+    liveDeviceRef = window._uxFbDb.ref(ROOT + room + '/live/deviceState');
+    liveDeviceRef.on('value', snap => applyDeviceToResearcher(snap.val()));
+
+    liveTranscriptRef = window._uxFbDb.ref(ROOT + room + '/live/transcripts');
+    const startAt = Date.now() - 30000;
+    liveTranscriptRef.orderByChild('at').startAt(startAt).on('child_added', snap => appendTranscriptOnResearcher(snap.val()));
+  }
+  function bootLiveSync(){
+    if (!window._uxFbDb) {
+      console.warn('[UXLens] Firebase is not connected. Netlify cross-device sync cannot work; only same-browser BroadcastChannel/localStorage fallback can work.');
+      return;
+    }
+    ensureParticipantPublisher();
+    ensureResearcherListeners();
+  }
+
+  const prevToggle = window.toggleRecAndStartDevice;
+  window.toggleRecAndStartDevice = async function(type, el){
+    const result = prevToggle ? await prevToggle.apply(this, arguments) : undefined;
+    setTimeout(publishDevice, 120);
+    setTimeout(publishDevice, 650);
+    return result;
+  };
+
+  const prevReady = window.uxParticipantReadySignal;
+  window.uxParticipantReadySignal = async function(){
+    const result = prevReady ? await prevReady.apply(this, arguments) : undefined;
+    if (isParticipant() && state.online) state.online.participantReady = true;
+    setTimeout(publishDevice, 150);
+    setTimeout(publishDevice, 900);
+    return result;
+  };
+
+  const prevStartTesting = window.uxParticipantStartTesting;
+  window.uxParticipantStartTesting = function(){
+    const result = prevStartTesting ? prevStartTesting.apply(this, arguments) : undefined;
+    setTimeout(bootLiveSync, 300);
+    setTimeout(publishDevice, 600);
+    return result;
+  };
+
+  const prevResearcherMeeting = window.uxEnterResearcherMeeting;
+  window.uxEnterResearcherMeeting = function(){
+    const result = prevResearcherMeeting ? prevResearcherMeeting.apply(this, arguments) : undefined;
+    setTimeout(bootLiveSync, 300);
+    setTimeout(bootLiveSync, 1000);
+    return result;
+  };
+
+  const prevAddLine = window.addTranscriptLine;
+  window.addTranscriptLine = function(text){
+    if (isParticipant()) {
+      publishTranscript(text);
+      setTimeout(publishDevice, 50);
+      return;
+    }
+    return prevAddLine ? prevAddLine.apply(this, arguments) : undefined;
+  };
+
+  const prevStartMic = window.startMic;
+  window.startMic = async function(){
+    const result = prevStartMic ? await prevStartMic.apply(this, arguments) : undefined;
+    setTimeout(publishDevice, 250);
+    setTimeout(publishDevice, 1000);
+    return result;
+  };
+
+  const prevStopMic = window.stopMic;
+  window.stopMic = function(){
+    const result = prevStopMic ? prevStopMic.apply(this, arguments) : undefined;
+    setTimeout(publishDevice, 250);
+    return result;
+  };
+
+  const prevScreen = window.startScreenShare;
+  window.startScreenShare = async function(){
+    const result = prevScreen ? await prevScreen.apply(this, arguments) : undefined;
+    setTimeout(publishDevice, 300);
+    setTimeout(publishDevice, 1100);
+    return result;
+  };
+
+  const prevStopScreen = window.stopScreenShare;
+  window.stopScreenShare = function(){
+    const result = prevStopScreen ? prevStopScreen.apply(this, arguments) : undefined;
+    setTimeout(publishDevice, 250);
+    return result;
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    setTimeout(bootLiveSync, 500);
+    setInterval(bootLiveSync, 1500);
+  });
 })();
 </script>
 
