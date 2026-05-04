@@ -12938,5 +12938,127 @@ Format:
 })();
 </script>
 
+
+<!-- UXLENS PATCH: Participant lobby Start/Leave fix only -->
+<script id="ux-participant-lobby-start-leave-fix">
+(function(){
+  const previousStartTesting = window.uxParticipantStartTesting;
+  const previousDecline = window.uxParticipantDecline;
+
+  function uxDecodeCtx(str){
+    try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e) { return null; }
+  }
+
+  function uxApplyParticipantContextFromUrl(){
+    try {
+      const params = new URLSearchParams(location.search);
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'participant';
+      state.online.roomId = params.get('uxRoom') || state.online.roomId || '';
+
+      const ctx = uxDecodeCtx(params.get('uxCtx') || '');
+      if (ctx && ctx.study) state.study = Object.assign(state.study || {}, ctx.study);
+      if (ctx && ctx.p) state.p = Object.assign(state.p || {}, ctx.p);
+    } catch(e) {
+      console.warn('[UXLens] Participant context load skipped:', e);
+    }
+  }
+
+  function uxForceOpenParticipantTesting(){
+    uxApplyParticipantContextFromUrl();
+
+    const lobby = document.getElementById('ux-participant-lobby');
+    if (lobby) {
+      lobby.classList.remove('show');
+      lobby.style.display = 'none';
+      lobby.style.pointerEvents = 'none';
+    }
+
+    const modeModal = document.getElementById('ux-mode-modal');
+    if (modeModal) modeModal.classList.remove('open');
+
+    document.body.classList.add('ux-online-mode', 'ux-online-participant');
+    document.body.classList.remove('ux-online-researcher');
+
+    document.querySelectorAll('.phase').forEach(el => el.classList.remove('active'));
+    const testingPhase = document.getElementById('phase-testing');
+    if (testingPhase) testingPhase.classList.add('active');
+
+    document.querySelectorAll('.ps-btn').forEach(el => el.classList.remove('active'));
+    const testingTab = document.querySelector('.ps-btn[data-phase="testing"]');
+    if (testingTab) testingTab.classList.add('active');
+
+    const title = document.getElementById('page-title');
+    if (title) title.textContent = 'Participant Testing';
+
+    const timer = document.getElementById('timer-badge');
+    if (timer) timer.style.display = '';
+
+    state.online = state.online || {};
+    state.online.mode = 'online';
+    state.online.role = 'participant';
+    state.online.participantReady = false;
+    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
+
+    try { if (typeof window.uxApplyTestingRole === 'function') window.uxApplyTestingRole('participant'); } catch(e) {}
+    try { if (typeof window.renderTasks === 'function') window.renderTasks(); } catch(e) {}
+    try { if (typeof window.renderActiveTasks === 'function') window.renderActiveTasks(); } catch(e) {}
+    try { if (typeof window.updateReadiness === 'function') window.updateReadiness(); } catch(e) {}
+    try { if (typeof window.uxUpdateOnlineStatusUI === 'function') window.uxUpdateOnlineStatusUI(); } catch(e) {}
+
+    const startBtn = Array.from(document.querySelectorAll('#float-bar .fbar-btn')).find(b => (b.textContent || '').trim() === 'Start');
+    const stopBtn = Array.from(document.querySelectorAll('#float-bar .fbar-btn')).find(b => (b.textContent || '').trim() === 'Stop');
+    if (startBtn) startBtn.style.display = 'none';
+    if (stopBtn) stopBtn.style.display = 'none';
+
+    if (typeof showToast === 'function') showToast('Participant testing view opened. Click I’m Ready when ready.');
+  }
+
+  window.uxParticipantStartTesting = function(){
+    // Open the participant test window immediately. Do not wait on Firebase/context sync,
+    // because that can make the lobby button appear unresponsive on Netlify.
+    try {
+      const result = previousStartTesting ? previousStartTesting.apply(this, arguments) : undefined;
+      if (result && typeof result.catch === 'function') result.catch(e => console.warn('[UXLens] Previous participant start skipped:', e));
+    } catch(e) {
+      console.warn('[UXLens] Previous participant start failed; using safe open:', e);
+    }
+
+    uxForceOpenParticipantTesting();
+    setTimeout(uxForceOpenParticipantTesting, 80);
+    setTimeout(uxForceOpenParticipantTesting, 350);
+    return false;
+  };
+
+  window.uxParticipantDecline = function(){
+    // Do not call the old handler here because it redirects the participant back
+    // to the researcher onboarding screen. This handler only closes/exits the tab.
+    try {
+      const rid = state && state.online ? state.online.roomId : '';
+      if (rid && typeof window.uxMakeChannel === 'function') {
+        const ch = window.uxMakeChannel('uxlens-room-' + rid);
+        if (ch) {
+          ch.postMessage({ type:'participant-left', roomId:rid, sender:'participant', at:new Date().toISOString() });
+          setTimeout(() => { try { ch.close(); } catch(e) {} }, 500);
+        }
+      }
+    } catch(e) {}
+
+    try { if (state.micStream) state.micStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+    try { if (state.webcamStream) state.webcamStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+    try { if (state.screenStream) state.screenStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+
+    document.body.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Plus Jakarta Sans,Arial,sans-serif;background:#f7f4ff;color:#1a1a30;text-align:center;padding:24px"><div><h2 style="margin-bottom:8px">Session closed</h2><p style="color:#6b6b8c">You can close this tab now.</p></div></div>';
+
+    try { window.open('', '_self'); window.close(); } catch(e) {}
+    setTimeout(function(){
+      try { location.replace('about:blank'); } catch(e) {}
+    }, 350);
+    return false;
+  };
+})();
+</script>
+
 </body>
 </html>
