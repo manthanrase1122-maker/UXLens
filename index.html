@@ -8570,6 +8570,16 @@ Format:
     }
     if (event.type === 'researcher-recording-started' && state.online.role === 'participant') showToast('Researcher started the session recording');
     if (event.type === 'researcher-recording-stopped' && state.online.role === 'participant') showToast('Researcher stopped the session recording');
+    if (event.type === 'participant-frame') {
+      // Update device status chips from Firebase event (frame mirror image updated by Firebase listener)
+      const pd = state.online.participantDevices;
+      if (pd) {
+        if ('screen' in p) pd.screen = !!p.screen;
+        if ('mic' in p) pd.mic = !!p.mic;
+        if ('webcam' in p) pd.webcam = !!p.webcam;
+      }
+      uxUpdateOnlineStatusUI();
+    }
   }
 
   function uxInitRoomBridge(){
@@ -8604,8 +8614,8 @@ Format:
       card.id = 'ux-online-status-card';
       card.className = 'ux-online-status-card';
       const fbStatus = window._uxFbDb
-        ? '🟢 Firebase connected — cross-device sync active. Participant and researcher can join from different devices.'
-        : '⚠️ Firebase not configured — sync works on same device only. Fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync.';
+        ? '🟢 Firebase connected — cross-device sync active via Realtime Database. Screen frames + events sync between devices in real-time.'
+        : '⚠️ Firebase not connected — cross-device sync is unavailable. Only same-device/same-browser tab sync works. Check your Firebase config in index.html.';
       card.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><strong id="ux-online-status-title">Participant Status</strong><button class="btn btn-secondary" style="margin-left:auto;padding:7px 12px" onclick="uxCopyParticipantLink()">Copy Participant Link</button></div><div class="ux-status-row"><span class="ux-device-chip off" id="ux-chip-webcam">Webcam off</span><span class="ux-device-chip off" id="ux-chip-mic">Mic off</span><span class="ux-device-chip off" id="ux-chip-screen">Screen share off</span></div><div style="font-size:11.5px;color:var(--text-3);margin-top:9px">${fbStatus}</div>`;
       layout.prepend(card);
     }
@@ -8884,6 +8894,8 @@ Format:
   });
 
   window.uxDebugOnlineState = function(){ return JSON.parse(JSON.stringify(state.online)); };
+  // Expose so frame-mirror script can send events through FirebaseChannel
+  window.uxSendRoomEvent = uxSendRoomEvent;
 })();
 </script>
 
@@ -9015,13 +9027,14 @@ Format:
 
     try {
       const canvas = document.createElement('canvas');
-      const maxWidth = 920;
+      // Reduced to 700px / 0.35 quality to keep Firebase bandwidth low while still readable
+      const maxWidth = 700;
       const scale = Math.min(1, maxWidth / screenVid.videoWidth);
       canvas.width = Math.max(1, Math.round(screenVid.videoWidth * scale));
       canvas.height = Math.max(1, Math.round(screenVid.videoHeight * scale));
       const ctx = canvas.getContext('2d');
       ctx.drawImage(screenVid, 0, 0, canvas.width, canvas.height);
-      const frame = canvas.toDataURL('image/jpeg', 0.52);
+      const frame = canvas.toDataURL('image/jpeg', 0.35);
       const payload = {
         frame,
         at: Date.now(),
@@ -9030,14 +9043,20 @@ Format:
         mic: !!state.micActive,
         webcam: !!liveTrack(state.webcamStream, 'video')
       };
-      localStorage.setItem(roomKey('_mirror_frame'), JSON.stringify(payload));
-      localStorage.setItem(roomKey('_event'), JSON.stringify({
-        type: 'participant-frame',
-        payload: { screen: payload.screen, mic: payload.mic, webcam: payload.webcam },
-        roomId: roomId(),
-        at: new Date().toISOString(),
-        sender: 'participant'
-      }));
+
+      // PRIMARY: Firebase Realtime Database — works cross-device
+      if (window._uxFbDb) {
+        window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/mirror').set(payload)
+          .catch(e => console.warn('[UXLens] Firebase frame write failed:', e));
+      } else {
+        // FALLBACK: localStorage (same-device only)
+        localStorage.setItem(roomKey('_mirror_frame'), JSON.stringify(payload));
+      }
+
+      // Send device-status event through FirebaseChannel (not raw localStorage)
+      if (typeof window.uxSendRoomEvent === 'function') {
+        window.uxSendRoomEvent('participant-frame', { screen: payload.screen, mic: payload.mic, webcam: payload.webcam });
+      }
     } catch(e) {
       console.warn('Could not publish participant frame', e);
     }
@@ -9083,12 +9102,45 @@ Format:
     stopResearcherFrameReceiver();
     if (!isOnlineResearcher()) return;
     ensureResearcherMirrorUI();
-    researcherFrameTimer = setInterval(pullResearcherFrame, 550);
-    pullResearcherFrame();
+
+    if (window._uxFbDb && roomId()) {
+      // PRIMARY: Firebase real-time listener — works cross-device
+      const fbRef = window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/mirror');
+      fbRef.on('value', snap => {
+        const payload = snap.val();
+        if (!payload || payload.roomId !== roomId() || !payload.frame) return;
+        if (Date.now() - Number(payload.at || 0) > 8000) return; // ignore stale frames (>8s old)
+        updateResearcherMirrorFrame(payload.frame);
+        if (state.online && state.online.participantDevices) {
+          state.online.participantDevices.screen = !!payload.screen;
+          state.online.participantDevices.mic = !!payload.mic;
+          state.online.participantDevices.webcam = !!payload.webcam;
+        }
+        ['webcam','mic','screen'].forEach(k => {
+          const chip = document.getElementById('ux-chip-' + k);
+          if (!chip || !state.online || !state.online.participantDevices) return;
+          const on = !!state.online.participantDevices[k];
+          chip.className = 'ux-device-chip ' + (on ? 'on' : 'off');
+          chip.textContent = (k === 'screen' ? 'Screen share' : k.charAt(0).toUpperCase() + k.slice(1)) + (on ? ' on' : ' off');
+        });
+      });
+      researcherFrameTimer = '__firebase__'; // sentinel — Firebase listener is active
+    } else {
+      // FALLBACK: poll localStorage (same-device only)
+      researcherFrameTimer = setInterval(pullResearcherFrame, 550);
+      pullResearcherFrame();
+    }
   }
 
   function stopResearcherFrameReceiver(){
-    if (researcherFrameTimer) clearInterval(researcherFrameTimer);
+    if (researcherFrameTimer === '__firebase__') {
+      // Remove Firebase listener
+      if (window._uxFbDb && roomId()) {
+        try { window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/mirror').off(); } catch(e){}
+      }
+    } else if (researcherFrameTimer) {
+      clearInterval(researcherFrameTimer);
+    }
     researcherFrameTimer = null;
   }
 
@@ -9236,6 +9288,10 @@ Format:
   window.uxParticipantStopSharing = function(){
     stopParticipantFramePublisher();
     try { localStorage.removeItem(roomKey('_mirror_frame')); } catch(e){}
+    // Also remove frame from Firebase
+    if (window._uxFbDb && roomId()) {
+      try { window._uxFbDb.ref('uxlens/rooms/' + roomId() + '/mirror').remove(); } catch(e){}
+    }
     return baseParticipantStopSharing ? baseParticipantStopSharing.apply(this, arguments) : undefined;
   };
 
@@ -9259,7 +9315,12 @@ Format:
     if (!ok) return;
     state.online.recordingDone = false;
     startResearcherTimer();
-    try { localStorage.setItem(roomKey('_event'), JSON.stringify({ type:'researcher-recording-started', payload:{}, roomId:roomId(), at:new Date().toISOString(), sender:'researcher' })); } catch(e){}
+    // Send through FirebaseChannel so participant gets notified cross-device
+    if (typeof window.uxSendRoomEvent === 'function') {
+      window.uxSendRoomEvent('researcher-recording-started', {});
+    } else {
+      try { localStorage.setItem(roomKey('_event'), JSON.stringify({ type:'researcher-recording-started', payload:{}, roomId:roomId(), at:new Date().toISOString(), sender:'researcher' })); } catch(e){}
+    }
     showToast('Researcher recording started from participant screen');
   };
 
@@ -9271,7 +9332,12 @@ Format:
     await stopResearcherMirrorRecording();
     stopResearcherTimerAndSave();
     state.online.recordingDone = true;
-    try { localStorage.setItem(roomKey('_event'), JSON.stringify({ type:'researcher-recording-stopped', payload:{}, roomId:roomId(), at:new Date().toISOString(), sender:'researcher' })); } catch(e){}
+    // Send through FirebaseChannel so participant gets notified cross-device
+    if (typeof window.uxSendRoomEvent === 'function') {
+      window.uxSendRoomEvent('researcher-recording-stopped', {});
+    } else {
+      try { localStorage.setItem(roomKey('_event'), JSON.stringify({ type:'researcher-recording-stopped', payload:{}, roomId:roomId(), at:new Date().toISOString(), sender:'researcher' })); } catch(e){}
+    }
     document.querySelectorAll('#float-bar .fbar-btn').forEach(btn => {
       const t = btn.textContent.toLowerCase();
       if (t.includes('download recording') || t.includes('download ai insight') || t.includes('synthesize')) {
@@ -9295,8 +9361,9 @@ Format:
     return baseDownloadRec ? baseDownloadRec.apply(this, arguments) : undefined;
   };
 
+  // localStorage storage event — only used when Firebase is not configured (same-device fallback)
   window.addEventListener('storage', e => {
-    if (isOnlineResearcher() && e.key === roomKey('_mirror_frame')) {
+    if (!window._uxFbDb && isOnlineResearcher() && e.key === roomKey('_mirror_frame')) {
       const payload = safeJson(e.newValue, null);
       if (payload && payload.frame) updateResearcherMirrorFrame(payload.frame);
     }
@@ -9389,7 +9456,16 @@ Format:
 <script id="ux-online-1080-fullscreen-audio-patch">
 (function(){
   const RTC_CHANNEL_PREFIX = 'uxlens-rtc-';
-  const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      // Free TURN servers from Open Relay Project — needed for cross-device behind NAT/firewalls
+      { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ]
+  };
   let rtcChannel = null;
   let rtcRole = null;
   let researcherPc = null;
