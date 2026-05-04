@@ -1,1 +1,3 @@
+/api/gemini /.netlify/functions/gemini 200
+/api/health /.netlify/functions/gemini 200
 /* /index.html 200
