@@ -1655,6 +1655,20 @@ body {
   border-radius: 99px;
 }
 
+
+/* ══════════════════════════════════════
+   UXLENS PATCH: Screen share preview aspect fix only
+   Keeps participant/researcher UI unchanged; prevents shared screen from being cropped/split.
+══════════════════════════════════════ */
+#screen-preview-card .webcam-box {
+  background: #111827 !important;
+  overflow: hidden !important;
+}
+#screen-preview-card #screen-vid {
+  object-fit: contain !important;
+  background: #111827 !important;
+}
+
 </style>
 </head>
 <body>
@@ -2108,7 +2122,7 @@ body {
       <div class="t-card" id="screen-preview-card" style="display:none">
         <div class="t-card-title">Screen Share Preview</div>
         <div class="webcam-box">
-          <video id="screen-vid" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;display:none"></video>
+          <video id="screen-vid" autoplay muted playsinline style="width:100%;height:100%;object-fit:contain;background:#111827;display:none"></video>
           <span class="screen-placeholder-text" style="color:var(--text-3);font-size:14px;font-weight:500">Screen Share Preview</span>
         </div>
       </div>
@@ -2420,7 +2434,7 @@ body {
    STATE
 ══════════════════════ */
 const state = {
-  backendUrl: '', // Netlify Functions are same-origin in production
+  backendUrl: 'http://localhost:3000', // Configure your backend URL here
   study: {
     url:'',projectName:'',productType:'',shortDesc:'',coreTopic:'',secTopic:'',
     testGoal:'',criticalFlow:'',expectedOutcome:'',completionCriteria:'',
@@ -2594,11 +2608,10 @@ function editTasks() { switchPhase('context-setup'); switchStep('study'); setTim
    GEMINI API — via Backend
 ══════════════════════ */
 // Backend handles API key securely - no key exposed in frontend
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Manthan 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Manthan 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Shweta 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Shyamali 
-const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Poonam 
+// const GEMINI_API_KEY = 'AIzaSyA7lL7aOiaeoeqf8DX_5nqXdpzs5et9Rws'; // Manthan 
+const GEMINI_API_KEY = 'AIzaSyBTHDmQ4roWgJu-SX8C1IwyOVy0y4MzWrM'; // Shweta 
+// const GEMINI_API_KEY = 'AIzaSyAiighhaRyP72JvwPX9ou5bDZwuujjSt1I'; // Shyamali 
+// const GEMINI_API_KEY = 'AIzaSyDjyG-v9TrG8ahmCYqfFqjPU72MdmRzUSo'; // Poonam 
 
 async function callGemini(prompt, maxTokens = 1500) {
   try {
@@ -5069,17 +5082,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   updateTechComfortLabel();
 
-  // Direct Gemini mode: auto-check on load
-  const _statusEl = document.getElementById('backend-status-text');
-  if (_statusEl) {
-    _statusEl.textContent = 'Checking AI…';
-    _statusEl.style.background = 'rgba(245,158,11,0.12)';
-    _statusEl.style.color = '#f59e0b';
+  // Direct Gemini mode — auto-check API on load so badge shows real status, not "unknown"
+  const _badge = document.getElementById('backend-status-text');
+  if (_badge) {
+    _badge.textContent = 'Checking AI…';
+    _badge.style.background = 'rgba(245,158,11,0.12)';
+    _badge.style.color = '#f59e0b';
   }
-  setTimeout(async () => {
-    if (typeof window.checkGeminiApiStatus === 'function') await window.checkGeminiApiStatus();
-  }, 1200);
   updateTokenSessionEstimate();
+  // Delay slightly so all patches are loaded before the check fires
+  setTimeout(async () => {
+    if (typeof checkGeminiApiStatus === 'function') {
+      await checkGeminiApiStatus();
+    }
+  }, 1200);
   const tokenEl = document.getElementById('token-session-estimate');
   if (tokenEl) {
     tokenEl.addEventListener('click', askGeminiTokenBudget);
@@ -5114,6 +5130,29 @@ updateReadiness();
 ══════════════════════ */
 const startRecordingCaptureComposite1080 = startRecordingCapture;
 
+
+
+/* UXLENS PATCH: draw shared screen with contain-fit in composite recording */
+function drawVideoContain(ctx, video, canvasWidth, canvasHeight) {
+  if (!video || !video.videoWidth || !video.videoHeight) return;
+  const videoRatio = video.videoWidth / video.videoHeight;
+  const canvasRatio = canvasWidth / canvasHeight;
+  let drawW = canvasWidth;
+  let drawH = canvasHeight;
+  let dx = 0;
+  let dy = 0;
+  if (videoRatio > canvasRatio) {
+    drawW = canvasWidth;
+    drawH = Math.round(canvasWidth / videoRatio);
+    dy = Math.round((canvasHeight - drawH) / 2);
+  } else {
+    drawH = canvasHeight;
+    drawW = Math.round(canvasHeight * videoRatio);
+    dx = Math.round((canvasWidth - drawW) / 2);
+  }
+  ctx.drawImage(video, dx, dy, drawW, drawH);
+}
+
 function drawCompositeFrameStable() {
   const canvas = state.compositeCanvas;
   const ctx = state.compositeCtx;
@@ -5128,7 +5167,7 @@ function drawCompositeFrameStable() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   if (screenReady) {
-    ctx.drawImage(screenVid, 0, 0, canvas.width, canvas.height);
+    drawVideoContain(ctx, screenVid, canvas.width, canvas.height);
     if (webcamReady) {
       const pipW = Math.round(canvas.width * 0.23);
       const pipH = Math.round(pipW * 0.625);
@@ -8730,26 +8769,7 @@ Format:
     else switchPhase('testing');
   };
 
-  window.uxParticipantDecline = function(){
-    try { uxSendRoomEvent('participant-left'); } catch(e) {}
-
-    // Stop participant media cleanly, but do not redirect back to researcher onboarding.
-    try { if (state.micActive && typeof stopMic === 'function') stopMic(); } catch(e) {}
-    try { if (state.screenStream && typeof stopScreenShare === 'function') stopScreenShare(); } catch(e) {}
-    try {
-      if (state.webcamStream) state.webcamStream.getTracks().forEach(t => t.stop());
-      state.webcamStream = null;
-    } catch(e) {}
-    try {
-      const vid = document.getElementById('webcam-vid');
-      if (vid) { vid.pause?.(); vid.srcObject = null; vid.style.display = 'none'; }
-    } catch(e) {}
-
-    // Browsers often block window.close() unless the tab was script-opened, so show a closed state first.
-    document.body.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Plus Jakarta Sans,Arial,sans-serif;background:#f7f4ff;color:#1a1a30;text-align:center;padding:24px"><div><h2 style="margin-bottom:8px">Session closed</h2><p style="color:#6b6b8c">You can close this tab now.</p></div></div>';
-    try { window.open('', '_self'); window.close(); } catch(e) {}
-    return false;
-  };
+  window.uxParticipantDecline = function(){ uxSendRoomEvent('participant-left'); location.href = location.href.split('?')[0]; };
 
   function uxSetParticipantOptionUI(type, enabled){
     state.recOpts[type] = !!enabled;
@@ -8761,13 +8781,7 @@ Format:
 
   window.uxParticipantStartTesting = function(){
     const lobby = document.getElementById('ux-participant-lobby');
-    if (lobby) {
-      lobby.classList.remove('show');
-      lobby.style.display = 'none';
-      lobby.style.pointerEvents = 'none';
-    }
-
-    // Keep the working index-2 media flow intact. This only forces the participant testing view open.
+    if (lobby) lobby.classList.remove('show');
     uxSetMode('online');
     state.online.role = 'participant';
     state.online.participantReady = false;
@@ -8775,28 +8789,12 @@ Format:
     uxSetParticipantOptionUI('webcam', false);
     uxSetParticipantOptionUI('mic', false);
     uxSetParticipantOptionUI('screen', false);
-
-    try { uxInitRoomBridge(); } catch(e) { console.warn('[UXLens] room bridge skipped:', e); }
-
-    try {
-      if (originalSwitchPhase) originalSwitchPhase('testing');
-      else switchPhase('testing');
-    } catch(e) {
-      document.querySelectorAll('.phase').forEach(el => el.classList.remove('active'));
-      document.getElementById('phase-testing')?.classList.add('active');
-    }
-
-    try { uxApplyTestingRole('participant'); } catch(e) { console.warn('[UXLens] participant role UI skipped:', e); }
-    try { renderActiveTasks?.(); } catch(e) {}
-    try { uxUpdateOnlineStatusUI?.(); } catch(e) {}
-
-    const title = document.getElementById('page-title');
-    if (title) title.textContent = 'Participant Testing';
-    const timer = document.getElementById('timer-badge');
-    if (timer) timer.style.display = '';
-
+    uxInitRoomBridge();
+    originalSwitchPhase ? originalSwitchPhase('testing') : switchPhase('testing');
+    uxApplyTestingRole('participant');
+    renderActiveTasks?.();
+    uxUpdateOnlineStatusUI();
     showToast('Testing view opened. Turn on mic/webcam only if needed, then click I’m Ready.');
-    return false;
   };
 
   async function uxParticipantAutoStartScreenShare(){
@@ -12399,11 +12397,9 @@ Format:
   };
 
   const oldParticipantStart = window.uxParticipantStartTesting;
-  window.uxParticipantStartTesting = function(){
-    // Run the core function first so the lobby hides and the testing view shows immediately.
-    // Do NOT await loadRoomContext here — Firebase reads can block for seconds and freeze the button.
+  window.uxParticipantStartTesting = async function(){
+    await loadRoomContext(roomId());
     const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
-    loadRoomContext(roomId()).catch(function(){});
     setTimeout(startParticipantPublishing, 250);
     return result;
   };
@@ -12498,27 +12494,10 @@ Format:
     return false;
   };
 
-  // Initial top-bar status should not say disconnected just because localhost backend is absent.
+  // Initial top-bar: rename label. Don't overwrite "Checking AI…" — let the auto-check settle.
   setTimeout(() => {
-    const statusEl = document.getElementById('backend-status-text');
     const label = document.querySelector('#backend-status-bar span[style*="font-weight:600"]');
     if (label) label.textContent = 'AI Direct Mode';
-    if (statusEl && /Offline|Connected/.test(statusEl.textContent || '')) {
-      const q = state.apiQuotaStatus || { status:'unknown' };
-      if (q.status === 'available') {
-        statusEl.textContent = 'API available';
-        statusEl.style.background = 'rgba(34,197,94,0.12)';
-        statusEl.style.color = '#22c55e';
-      } else if (q.status === 'exhausted') {
-        statusEl.textContent = 'API quota exhausted';
-        statusEl.style.background = 'rgba(239,68,68,0.10)';
-        statusEl.style.color = '#ef4444';
-      } else {
-        statusEl.textContent = 'API status unknown';
-        statusEl.style.background = 'rgba(107,107,140,0.12)';
-        statusEl.style.color = '#6b6b8c';
-      }
-    }
     try { updateTokenSessionEstimate?.(); } catch(e){}
   }, 900);
 
@@ -12529,626 +12508,6 @@ Format:
     publishDeviceState,
     startResearcherListening
   };
-})();
-</script>
-
-
-
-<!-- ══════════════════════════════════════
-   UXLENS HOTFIX: RESEARCHER SCREEN PREVIEW SINGLE-LAYER FIT
-   Fixes split/half preview caused by multiple fallback mirror layers sitting side-by-side.
-   Scope: screen preview rendering only. No participant UI/functionality changes.
-══════════════════════════════════════ -->
-<style id="ux-screen-preview-single-layer-hotfix">
-  body.ux-online-researcher #screen-preview-card .webcam-box {
-    position: relative !important;
-    display: block !important;
-    overflow: hidden !important;
-    background: #080b18 !important;
-    aspect-ratio: 16 / 9 !important;
-  }
-
-  body.ux-online-researcher #screen-preview-card .webcam-box > video,
-  body.ux-online-researcher #screen-preview-card .webcam-box > img,
-  body.ux-online-researcher #screen-vid,
-  body.ux-online-researcher #ux-researcher-live-screen-img,
-  body.ux-online-researcher #ux-researcher-mirror-img {
-    position: absolute !important;
-    inset: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    max-width: none !important;
-    max-height: none !important;
-    object-fit: contain !important;
-    object-position: center center !important;
-    background: #080b18 !important;
-    border-radius: 18px !important;
-  }
-
-  body.ux-online-researcher #screen-preview-card .screen-placeholder-text,
-  body.ux-online-researcher #ux-researcher-mirror-waiting {
-    position: absolute !important;
-    inset: 0 !important;
-    z-index: 1 !important;
-  }
-
-  body.ux-online-researcher #screen-vid.ux-rtc-screen-video {
-    z-index: 4 !important;
-  }
-
-  body.ux-online-researcher #ux-researcher-live-screen-img {
-    z-index: 3 !important;
-  }
-
-  body.ux-online-researcher #ux-researcher-mirror-img {
-    z-index: 2 !important;
-  }
-
-  body.ux-online-researcher #ux-screen-live-status,
-  body.ux-online-researcher .ux-screen-live-status {
-    z-index: 8 !important;
-  }
-</style>
-<script id="ux-screen-preview-single-layer-hotfix-js">
-(function(){
-  function isOnlineResearcher(){
-    return !!(window.state && state.online && state.online.mode === 'online' && state.online.role === 'researcher');
-  }
-
-  function hasPlayableVideo(video){
-    try {
-      return !!(video && video.srcObject && video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2);
-    } catch(e) { return false; }
-  }
-
-  function hasGoodImage(img){
-    try {
-      return !!(img && img.src && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0);
-    } catch(e) { return false; }
-  }
-
-  function normalizeScreenPreviewLayers(){
-    if (!isOnlineResearcher()) return;
-    const box = document.querySelector('#screen-preview-card .webcam-box');
-    if (!box) return;
-
-    box.style.display = 'block';
-    box.style.position = 'relative';
-    box.style.overflow = 'hidden';
-
-    const video = document.getElementById('screen-vid');
-    const liveImg = document.getElementById('ux-researcher-live-screen-img');
-    const oldMirrorImg = document.getElementById('ux-researcher-mirror-img');
-    const waiting = document.getElementById('ux-researcher-mirror-waiting');
-    const placeholder = box.querySelector('.screen-placeholder-text');
-
-    const useVideo = hasPlayableVideo(video);
-    const useLiveImg = !useVideo && hasGoodImage(liveImg);
-    const useOldMirror = !useVideo && !useLiveImg && hasGoodImage(oldMirrorImg);
-
-    if (video) {
-      video.style.display = useVideo ? 'block' : 'none';
-      video.style.objectFit = 'contain';
-    }
-    if (liveImg) {
-      liveImg.style.display = useLiveImg ? 'block' : 'none';
-      liveImg.style.objectFit = 'contain';
-    }
-    if (oldMirrorImg) {
-      oldMirrorImg.style.display = useOldMirror ? 'block' : 'none';
-      oldMirrorImg.style.objectFit = 'contain';
-    }
-
-    const visible = useVideo || useLiveImg || useOldMirror;
-    if (waiting) waiting.style.display = visible ? 'none' : 'flex';
-    if (placeholder) placeholder.style.display = 'none';
-  }
-
-  const originalSetResearcherFrame = window.setResearcherFrame;
-  if (typeof originalSetResearcherFrame === 'function') {
-    window.setResearcherFrame = function(){
-      const result = originalSetResearcherFrame.apply(this, arguments);
-      setTimeout(normalizeScreenPreviewLayers, 0);
-      return result;
-    };
-  }
-
-  ['loadedmetadata','canplay','playing'].forEach(function(evt){
-    document.addEventListener(evt, function(e){
-      if (e && e.target && e.target.id === 'screen-vid') setTimeout(normalizeScreenPreviewLayers, 0);
-    }, true);
-  });
-
-  const observer = new MutationObserver(function(){
-    normalizeScreenPreviewLayers();
-  });
-
-  function boot(){
-    const box = document.querySelector('#screen-preview-card .webcam-box');
-    if (box) observer.observe(box, { childList:true, subtree:true, attributes:true, attributeFilter:['src','class','style'] });
-    normalizeScreenPreviewLayers();
-    setInterval(normalizeScreenPreviewLayers, 700);
-  }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
-})();
-</script>
-
-<!-- ══════════════════════════════════════════════════════════════════
-   UXLENS GEMINI KEY ROTATION + MODEL FALLBACK
-   - Tries all 4 keys in sequence; rotates on quota OR referrer-block
-   - Falls back from gemini-2.5-flash → gemini-2.0-flash if model missing
-   - AI keeps running until every key's tokens are gone
-══════════════════════════════════════════════════════════════════ -->
-<script id="uxlens-gemini-key-rotation">
-(function(){
-  const KEYS = [
-    'PASTE_KEY_IN_NETLIFY_ENV_ONLY', // Shweta
-    'PASTE_KEY_IN_NETLIFY_ENV_ONLY', // Manthan
-    'PASTE_KEY_IN_NETLIFY_ENV_ONLY', // Shyamali
-    'PASTE_KEY_IN_NETLIFY_ENV_ONLY', // Poonam
-  ];
-  const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-  const BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
-
-  // Per-key state
-  const blockedUntil = {}; // key → timestamp
-  let activeModel = MODELS[0];
-
-  function isQuotaErr(status, msg) {
-    return Number(status) === 429 || /quota|rate.?limit|resource_exhausted|free_tier/i.test(String(msg || ''));
-  }
-  function retryMs(msg) {
-    const m = String(msg || '').match(/retry[^:]*after[:\s]+(\d+)/i);
-    return m ? Number(m[1]) * 1000 : 3_600_000;
-  }
-  function keyLabel(k) { return '…' + k.slice(-6); }
-
-  function availableKey() {
-    const now = Date.now();
-    for (const k of KEYS) if (!(blockedUntil[k] > now)) return k;
-    return null;
-  }
-
-  async function post(key, model, body) {
-    const url = BASE + model + ':generateContent?key=' + key;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    let data = {};
-    try { data = await resp.json(); } catch(e) {}
-    if (typeof trackGeminiUsage === 'function') try { trackGeminiUsage(data); } catch(e) {}
-    return { resp, data };
-  }
-
-  // Core: try every key (and model fallback) until one succeeds
-  async function callWithRotation(body, extractFn, label) {
-    const now = Date.now();
-
-    for (const key of KEYS) {
-      if (blockedUntil[key] > now) continue; // skip exhausted/blocked
-
-      // Try primary model, then fallbacks
-      for (const model of MODELS) {
-        try {
-          const { resp, data } = await post(key, model, body);
-          if (resp.ok) {
-            activeModel = model; // remember working model
-            if (typeof setGeminiApiAvailable === 'function') setGeminiApiAvailable('API available');
-            return extractFn(data);
-          }
-          const msg = data?.error?.message || String(resp.status);
-
-          if (isQuotaErr(resp.status, msg)) {
-            const wait = retryMs(msg);
-            blockedUntil[key] = Date.now() + wait;
-            console.warn('[UXLens] Key ' + keyLabel(key) + ' quota-exhausted, retrying in ' + Math.round(wait/60000) + ' min');
-            break; // move to next key, not next model
-          }
-          if (resp.status === 404 || /not found|invalid model/i.test(msg)) {
-            console.warn('[UXLens] Model ' + model + ' not available, trying next');
-            continue; // try next model
-          }
-          if (resp.status === 400 || resp.status === 403) {
-            console.warn('[UXLens] Key ' + keyLabel(key) + ' blocked (' + resp.status + '): ' + msg.slice(0, 80));
-            blockedUntil[key] = Date.now() + 300_000; // soft-block 5 min, try other keys
-            break; // move to next key
-          }
-          // Other error — log and try next key
-          console.warn('[UXLens] ' + label + ' error ' + resp.status + ': ' + msg.slice(0, 80));
-          break;
-        } catch(e) {
-          console.warn('[UXLens] Network error (key ' + keyLabel(key) + '):', e.message);
-          blockedUntil[key] = Date.now() + 30_000; // back off 30s
-          break;
-        }
-      }
-    }
-
-    // All keys failed
-    const allGone = KEYS.every(k => blockedUntil[k] > Date.now());
-    if (allGone) {
-      if (typeof setGeminiApiExhausted === 'function') setGeminiApiExhausted('All API keys exhausted', 3_600_000);
-      if (typeof showToast === 'function') showToast('All Gemini API keys exhausted — AI unavailable');
-    } else {
-      if (typeof showToast === 'function') showToast('AI request failed — check API key restrictions');
-    }
-    return null;
-  }
-
-  // ── Override checkGeminiApiStatus ──────────────────────────────────────
-  window.checkGeminiApiStatus = async function() {
-    if (typeof state !== 'undefined') {
-      state.apiQuotaStatus = { ...(state.apiQuotaStatus || {}), status: 'checking', lastChecked: Date.now(), message: 'Checking all keys…' };
-      if (typeof persistApiQuotaStatus === 'function') persistApiQuotaStatus();
-      if (typeof updateTokenSessionEstimate === 'function') updateTokenSessionEstimate();
-    }
-
-    for (const key of KEYS) {
-      for (const model of MODELS) {
-        try {
-          const { resp, data } = await post(key, model, {
-            contents: [{ parts: [{ text: 'OK' }] }],
-            generationConfig: { maxOutputTokens: 4, temperature: 0 }
-          });
-          if (resp.ok) {
-            activeModel = model;
-            const working = KEYS.indexOf(key) + 1;
-            if (typeof setGeminiApiAvailable === 'function') setGeminiApiAvailable('API available (key ' + working + '/' + KEYS.length + ', model: ' + model + ')');
-            if (typeof showToast === 'function') showToast('Gemini AI connected ✓ (' + model + ')');
-            return true;
-          }
-          const msg = data?.error?.message || String(resp.status);
-          if (isQuotaErr(resp.status, msg)) { blockedUntil[key] = Date.now() + retryMs(msg); break; }
-          if (resp.status === 404 || /not found/i.test(msg)) continue; // try next model
-          blockedUntil[key] = Date.now() + 300_000; break; // 403/400 → try next key
-        } catch(e) { blockedUntil[key] = Date.now() + 30_000; break; }
-      }
-    }
-
-    const allGone = KEYS.every(k => blockedUntil[k] > Date.now());
-    if (allGone) {
-      if (typeof setGeminiApiExhausted === 'function') setGeminiApiExhausted('All API keys exhausted or blocked', 3_600_000);
-      if (typeof showToast === 'function') showToast('All API keys exhausted or blocked by referrer restriction');
-    } else {
-      if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown('API check failed — keys may have referrer restrictions');
-      if (typeof showToast === 'function') showToast('API check failed — see Google Cloud Console → API key restrictions');
-    }
-    return false;
-  };
-
-  // ── Override callGemini ────────────────────────────────────────────────
-  window.callGemini = function(prompt, maxTokens = 1500) {
-    return callWithRotation(
-      { contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens, temperature: 0.4, topP: 0.9 } },
-      data => data.candidates?.[0]?.content?.parts?.[0]?.text || null,
-      'callGemini'
-    );
-  };
-
-  // ── Override callGeminiVision ──────────────────────────────────────────
-  window.callGeminiVision = function(prompt, imageBase64, maxTokens = 900) {
-    if (typeof isVisualQuotaCoolingDown === 'function' && isVisualQuotaCoolingDown()) {
-      const wait = Math.ceil(((state?.geminiQuotaBlockedUntil || 0) - Date.now()) / 1000);
-      if (typeof showToast === 'function') showToast('Visual AI cooldown: retry in ' + wait + 's');
-      return Promise.resolve(null);
-    }
-    const clean = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-    return callWithRotation(
-      { contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'image/jpeg', data: clean } }] }], generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2, topP: 0.9 } },
-      data => data.candidates?.[0]?.content?.parts?.[0]?.text || null,
-      'callGeminiVision'
-    );
-  };
-
-  console.log('[UXLens] Gemini key rotation active — ' + KEYS.length + ' keys, models: ' + MODELS.join(' → '));
-})();
-</script>
-
-
-<!-- ═══════════════════════════════════════════════════════════════════════
-  UXLENS NETLIFY API BRIDGE — FINAL PATCH
-  Purpose:
-  - Keeps the existing UI and functionality intact.
-  - Stops browser-side Gemini API calls.
-  - Routes text + vision AI calls through Netlify Function: /.netlify/functions/gemini
-  - API key must be stored in Netlify Environment Variables as GEMINI_API_KEY.
-═══════════════════════════════════════════════════════════════════════ -->
-<script id="uxlens-netlify-api-bridge-final">
-(function(){
-  const NETLIFY_GEMINI_ENDPOINT = '/.netlify/functions/gemini';
-
-  function isQuotaLike(status, msg) {
-    return Number(status) === 429 || /quota|rate.?limit|resource_exhausted|free_tier|exhausted/i.test(String(msg || ''));
-  }
-
-  function retryMsFromMessage(msg) {
-    const m = String(msg || '').match(/retry in\s+([\d.]+)s/i);
-    return m ? Math.ceil(Number(m[1]) * 1000) : 60000;
-  }
-
-  async function callNetlifyGemini(payload) {
-    const resp = await fetch(NETLIFY_GEMINI_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    let data = {};
-    try { data = await resp.json(); } catch(e) { data = {}; }
-
-    if (typeof trackGeminiUsage === 'function') trackGeminiUsage(data);
-
-    if (!resp.ok || data.ok === false) {
-      const msg = data.error || data.message || ('HTTP ' + resp.status);
-      console.error('[UXLens] Netlify Gemini error:', data);
-
-      if (isQuotaLike(resp.status, msg)) {
-        const retryMs = data.retryMs || retryMsFromMessage(msg);
-        if (typeof setGeminiApiExhausted === 'function') setGeminiApiExhausted(msg, retryMs);
-        if (typeof setVisualQuotaNotice === 'function' && payload.type === 'vision') setVisualQuotaNotice(msg, retryMs);
-        if (typeof showToast === 'function') showToast('Gemini API quota exhausted. Try again after cooldown or use another key.');
-      } else {
-        if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown(msg);
-        if (typeof showToast === 'function') showToast('AI error: ' + msg);
-      }
-      return null;
-    }
-
-    if (typeof setGeminiApiAvailable === 'function') setGeminiApiAvailable('API available via Netlify Function');
-    return data.text || null;
-  }
-
-  window.callGemini = async function(prompt, maxTokens = 1500) {
-    try {
-      return await callNetlifyGemini({
-        type: 'text',
-        prompt,
-        maxTokens,
-        temperature: 0.4,
-        topP: 0.9
-      });
-    } catch (e) {
-      console.error('[UXLens] Netlify Gemini connection error:', e);
-      if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown('Netlify Function connection error.');
-      if (typeof showToast === 'function') showToast('Netlify AI function connection error.');
-      return null;
-    }
-  };
-
-  window.callGeminiVision = async function(prompt, imageBase64, maxTokens = 900) {
-    try {
-      if (typeof isVisualQuotaCoolingDown === 'function' && isVisualQuotaCoolingDown()) {
-        const wait = Math.ceil(((state?.geminiQuotaBlockedUntil || 0) - Date.now()) / 1000);
-        if (typeof showToast === 'function') showToast('Gemini quota cooldown: retry in ' + wait + 's');
-        return null;
-      }
-      const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-      return await callNetlifyGemini({
-        type: 'vision',
-        prompt,
-        imageBase64: cleanBase64,
-        maxTokens,
-        temperature: 0.2,
-        topP: 0.9
-      });
-    } catch (e) {
-      console.error('[UXLens] Netlify Gemini Vision connection error:', e);
-      if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown('Netlify Vision Function connection error.');
-      if (typeof showToast === 'function') showToast('Netlify Visual AI function connection error.');
-      return null;
-    }
-  };
-
-  window.checkGeminiApiStatus = async function() {
-    try {
-      if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown('Checking Netlify Function…');
-      const resp = await fetch(NETLIFY_GEMINI_ENDPOINT, { method: 'GET' });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data.ok) {
-        if (typeof setGeminiApiAvailable === 'function') setGeminiApiAvailable('API available via Netlify Function');
-        if (typeof showToast === 'function') showToast('Gemini AI connected through Netlify ✓');
-        return true;
-      }
-      const msg = data.error || data.message || ('HTTP ' + resp.status);
-      if (isQuotaLike(resp.status, msg)) {
-        if (typeof setGeminiApiExhausted === 'function') setGeminiApiExhausted(msg, data.retryMs || retryMsFromMessage(msg));
-      } else if (typeof setGeminiApiUnknown === 'function') {
-        setGeminiApiUnknown(msg);
-      }
-      if (typeof showToast === 'function') showToast('API check failed: ' + msg);
-      return false;
-    } catch (e) {
-      console.error('[UXLens] API status check failed:', e);
-      if (typeof setGeminiApiUnknown === 'function') setGeminiApiUnknown('Netlify Function not reachable.');
-      if (typeof showToast === 'function') showToast('Netlify Function not reachable.');
-      return false;
-    }
-  };
-
-  window.checkBackendStatus = window.checkGeminiApiStatus;
-
-  document.addEventListener('DOMContentLoaded', function(){
-    if (typeof window.checkGeminiApiStatus === 'function') {
-      setTimeout(window.checkGeminiApiStatus, 250);
-    }
-  });
-
-  console.log('[UXLens] Netlify API bridge active — Gemini calls are routed through Netlify Functions.');
-})();
-</script>
-
-
-<!-- ══════════════════════════════════════
-   UXLENS PATCH: FINAL PARTICIPANT START TESTING BUTTON FIX
-   Keeps existing UI + online sync. Bypasses older wrapper chain if it blocks the lobby button.
-══════════════════════════════════════ -->
-<script id="ux-participant-start-button-final-fix">
-(function(){
-  var participantPublishTimer = null;
-
-  function safeRoomKey(rid){
-    return String(rid || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-  }
-
-  function getRoomId(){
-    try {
-      var params = new URLSearchParams(window.location.search || '');
-      return params.get('uxRoom') || (window.state && state.online && state.online.roomId) || '';
-    } catch(e) {
-      return (window.state && state.online && state.online.roomId) || '';
-    }
-  }
-
-  function hasLiveTrack(stream, kind){
-    try {
-      if (!stream || !stream.getTracks) return false;
-      return stream.getTracks().some(function(t){ return (!kind || t.kind === kind) && t.readyState === 'live'; });
-    } catch(e) { return false; }
-  }
-
-  function toast(msg){
-    try { if (typeof window.showToast === 'function') window.showToast(msg); } catch(e) {}
-  }
-
-  function setParticipantOptionUI(type, enabled){
-    window.state = window.state || {};
-    state.recOpts = state.recOpts || { webcam:false, mic:false, screen:false };
-    state.recOpts[type] = !!enabled;
-    var chk = document.getElementById('chk-' + type);
-    var row = document.getElementById('rec-' + type);
-    if (chk) chk.classList.toggle('checked', !!enabled);
-    if (row) row.classList.toggle('active', !!enabled);
-  }
-
-  function forceTestingPhase(){
-    try {
-      document.querySelectorAll('.phase').forEach(function(el){ el.classList.remove('active'); });
-      var testing = document.getElementById('phase-testing');
-      if (testing) testing.classList.add('active');
-      document.querySelectorAll('.ps-btn').forEach(function(btn){ btn.classList.toggle('active', btn.getAttribute('data-phase') === 'testing'); });
-    } catch(e) {}
-
-    var title = document.getElementById('page-title');
-    if (title) title.textContent = 'Participant Testing';
-    var timer = document.getElementById('timer-badge');
-    if (timer) timer.style.display = '';
-  }
-
-  async function loadShortLinkContext(rid){
-    if (!rid || !window.state) return;
-    var ctx = null;
-    try { ctx = JSON.parse(localStorage.getItem('uxlens_room_context_' + rid) || 'null'); } catch(e) {}
-    if (!ctx) { try { ctx = JSON.parse(localStorage.getItem('uxlens_online_room_' + rid) || 'null'); } catch(e) {} }
-    if (!ctx && window._uxFbDb) {
-      try {
-        var snap = await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/context').once('value');
-        ctx = snap.val();
-      } catch(e) { console.warn('[UXLens] Participant context load skipped:', e); }
-    }
-    if (ctx && ctx.study) state.study = Object.assign({}, state.study || {}, ctx.study);
-    if (ctx && ctx.p) state.p = Object.assign({}, state.p || {}, ctx.p);
-    try { if (typeof window.renderTasks === 'function') window.renderTasks(); } catch(e) {}
-    try { if (typeof window.renderActiveTasks === 'function') window.renderActiveTasks(); } catch(e) {}
-    try { if (typeof window.updateReadiness === 'function') window.updateReadiness(); } catch(e) {}
-  }
-
-  function currentDeviceState(extra){
-    window.state = window.state || {};
-    state.online = state.online || {};
-    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
-    return Object.assign({
-      screen: !!state.online.participantDevices.screen || hasLiveTrack(state.screenStream, 'video'),
-      mic: !!state.online.participantDevices.mic || !!state.micActive,
-      webcam: !!state.online.participantDevices.webcam || hasLiveTrack(state.webcamStream, 'video'),
-      ready: !!state.online.participantReady,
-      at: Date.now()
-    }, extra || {});
-  }
-
-  function publishParticipantState(extra){
-    if (!window.state || !state.online || state.online.role !== 'participant') return;
-    var rid = getRoomId();
-    if (!rid) return;
-    var payload = currentDeviceState(extra);
-    state.online.participantDevices = {
-      screen: !!payload.screen,
-      mic: !!payload.mic,
-      webcam: !!payload.webcam
-    };
-    try { localStorage.setItem('uxlens_online_room_' + rid + '_participant_device_state', JSON.stringify(payload)); } catch(e) {}
-    try { if (window._uxFbDb) window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').set(payload); } catch(e) {}
-    try { if (typeof window._uxPostSync === 'function') window._uxPostSync('participant-device-state', payload); } catch(e) {}
-    try {
-      if (typeof window.uxMakeChannel === 'function') {
-        var ch = window.uxMakeChannel('uxlens-room-' + rid);
-        if (ch) {
-          ch.postMessage({ type:'participant-device-state', payload:payload, roomId:rid, sender:'participant', at:Date.now() });
-          setTimeout(function(){ try { ch.close(); } catch(e) {} }, 1000);
-        }
-      }
-    } catch(e) {}
-  }
-
-  function startParticipantPublishing(){
-    if (participantPublishTimer) clearInterval(participantPublishTimer);
-    publishParticipantState();
-    participantPublishTimer = setInterval(function(){ publishParticipantState(); }, 1200);
-  }
-
-  window.uxParticipantStartTesting = function(ev){
-    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
-    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
-
-    var rid = getRoomId();
-    window.state = window.state || {};
-    state.online = state.online || {};
-    state.recOpts = state.recOpts || { webcam:false, mic:false, screen:false };
-    state.online.mode = 'online';
-    state.online.role = 'participant';
-    state.online.roomId = rid || state.online.roomId || ('UX-' + Date.now().toString(36).toUpperCase());
-    state.online.participantReady = false;
-    state.online.participantDevices = { mic:false, webcam:false, screen:false };
-
-    var lobby = document.getElementById('ux-participant-lobby');
-    if (lobby) {
-      lobby.classList.remove('show');
-      lobby.style.display = 'none';
-      lobby.style.pointerEvents = 'none';
-    }
-
-    document.body.classList.add('ux-online-participant');
-    document.body.classList.remove('ux-online-researcher');
-
-    setParticipantOptionUI('webcam', false);
-    setParticipantOptionUI('mic', false);
-    setParticipantOptionUI('screen', false);
-
-    try { if (typeof window.uxInitRoomBridge === 'function') window.uxInitRoomBridge(); } catch(e) { console.warn('[UXLens] room bridge skipped:', e); }
-    forceTestingPhase();
-    try { if (typeof window.uxApplyTestingRole === 'function') window.uxApplyTestingRole('participant'); } catch(e) { console.warn('[UXLens] participant role UI skipped:', e); }
-    try { if (typeof window.renderActiveTasks === 'function') window.renderActiveTasks(); } catch(e) {}
-    try { if (typeof window.uxUpdateOnlineStatusUI === 'function') window.uxUpdateOnlineStatusUI(); } catch(e) {}
-
-    loadShortLinkContext(state.online.roomId).catch(function(){});
-    setTimeout(startParticipantPublishing, 150);
-    setTimeout(function(){ publishParticipantState(); }, 600);
-    toast('Testing view opened. Turn on mic/webcam only if needed, then click I’m Ready.');
-    return false;
-  };
-
-  document.addEventListener('click', function(e){
-    var btn = e.target && e.target.closest ? e.target.closest('#ux-participant-lobby button') : null;
-    if (!btn) return;
-    if (/start\s*testing/i.test(btn.textContent || '')) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      window.uxParticipantStartTesting(e);
-    }
-  }, true);
 })();
 </script>
 
