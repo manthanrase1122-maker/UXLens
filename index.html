@@ -12399,9 +12399,11 @@ Format:
   };
 
   const oldParticipantStart = window.uxParticipantStartTesting;
-  window.uxParticipantStartTesting = async function(){
-    await loadRoomContext(roomId());
+  window.uxParticipantStartTesting = function(){
+    // Run the core function first so the lobby hides and the testing view shows immediately.
+    // Do NOT await loadRoomContext here — Firebase reads can block for seconds and freeze the button.
     const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
+    loadRoomContext(roomId()).catch(function(){});
     setTimeout(startParticipantPublishing, 250);
     return result;
   };
