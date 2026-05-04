@@ -8730,7 +8730,19 @@ Format:
     else switchPhase('testing');
   };
 
-  window.uxParticipantDecline = function(){ uxSendRoomEvent('participant-left'); location.href = location.href.split('?')[0]; };
+  window.uxParticipantDecline = function(){
+    uxSendRoomEvent('participant-left');
+    try { window.close(); } catch(e){}
+    // Fallback if browser blocks window.close() (tab opened directly via URL)
+    setTimeout(function(){
+      const lobby = document.getElementById('ux-participant-lobby');
+      const card = lobby && lobby.querySelector('.ux-lobby-card');
+      if (card) {
+        card.innerHTML = '<div style="text-align:center;padding:40px 24px"><h2 style="font-size:22px;margin-bottom:10px;color:#1a1a2e">Session ended</h2><p style="color:#666;font-size:15px">You may close this tab.</p></div>';
+        if (lobby) lobby.classList.add('show');
+      }
+    }, 300);
+  };
 
   function uxSetParticipantOptionUI(type, enabled){
     state.recOpts[type] = !!enabled;
@@ -12358,9 +12370,12 @@ Format:
   };
 
   const oldParticipantStart = window.uxParticipantStartTesting;
-  window.uxParticipantStartTesting = async function(){
-    await loadRoomContext(roomId());
+  window.uxParticipantStartTesting = function(){
+    // Call the core function synchronously first — lobby hides and testing view shows immediately.
+    // Don't await Firebase context load here; it would block the lobby from dismissing.
     const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
+    // Load room context in background after UI has already switched.
+    loadRoomContext(roomId()).catch(function(){});
     setTimeout(startParticipantPublishing, 250);
     return result;
   };
