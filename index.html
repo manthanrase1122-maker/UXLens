@@ -12938,5 +12938,84 @@ Format:
 })();
 </script>
 
+
+
+<!-- UXLENS PATCH: Participant Start Testing button fallback fix only
+     Keeps existing code intact. This only guarantees the participant lobby button
+     opens the participant testing page even if the original online-mode switch fails. -->
+<script id="ux-participant-start-testing-fix-only">
+(function(){
+  const previousParticipantStartTesting = window.uxParticipantStartTesting;
+
+  function uxForceOpenParticipantTestingView(){
+    try {
+      const params = new URLSearchParams(location.search);
+      const roomId = params.get('uxRoom') || (state.online && state.online.roomId) || '';
+
+      state.online = state.online || {};
+      state.online.mode = 'online';
+      state.online.role = 'participant';
+      state.online.roomId = roomId;
+      state.online.participantReady = false;
+      state.online.participantDevices = { mic:false, webcam:false, screen:false };
+
+      const lobby = document.getElementById('ux-participant-lobby');
+      if (lobby) {
+        lobby.classList.remove('show');
+        lobby.style.display = 'none';
+      }
+
+      document.body.classList.add('ux-online-mode', 'ux-online-participant');
+      document.body.classList.remove('ux-online-researcher');
+
+      document.querySelectorAll('.phase').forEach(function(el){ el.classList.remove('active'); });
+      const testingPhase = document.getElementById('phase-testing');
+      if (testingPhase) testingPhase.classList.add('active');
+
+      document.querySelectorAll('.ps-btn').forEach(function(el){ el.classList.remove('active'); });
+      const testingBtn = document.querySelector('.ps-btn[data-phase="testing"]');
+      if (testingBtn) testingBtn.classList.add('active');
+
+      const title = document.getElementById('page-title');
+      if (title) title.textContent = 'Participant Testing';
+
+      const timer = document.getElementById('timer-badge');
+      if (timer) timer.style.display = '';
+
+      ['webcam','mic','screen'].forEach(function(type){
+        try {
+          state.recOpts[type] = false;
+          const chk = document.getElementById('chk-' + type);
+          const row = document.getElementById('rec-' + type);
+          if (chk) chk.classList.remove('checked');
+          if (row) row.classList.remove('active');
+        } catch(e) {}
+      });
+
+      if (typeof renderActiveTasks === 'function') renderActiveTasks();
+      if (typeof showToast === 'function') showToast('Participant testing view opened. Click I’m Ready when ready.');
+    } catch(err) {
+      console.error('[UXLens] Participant Start Testing fallback failed:', err);
+    }
+  }
+
+  window.uxParticipantStartTesting = function(){
+    try {
+      if (typeof previousParticipantStartTesting === 'function') previousParticipantStartTesting.apply(this, arguments);
+    } catch(err) {
+      console.error('[UXLens] Original Start Testing failed, using fallback:', err);
+    }
+
+    setTimeout(function(){
+      const testingPhase = document.getElementById('phase-testing');
+      const lobby = document.getElementById('ux-participant-lobby');
+      const stillInLobby = lobby && (lobby.classList.contains('show') || getComputedStyle(lobby).display !== 'none');
+      const testingOpen = testingPhase && testingPhase.classList.contains('active');
+      if (!testingOpen || stillInLobby) uxForceOpenParticipantTestingView();
+    }, 50);
+  };
+})();
+</script>
+
 </body>
 </html>
