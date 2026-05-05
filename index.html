@@ -8531,17 +8531,17 @@ Format:
   function uxSafeJsonParse(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
   function uxEncodePayload(obj){ try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch(e){ return ''; } }
   function uxDecodePayload(str){ try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e){ return null; } }
-  function uxMakeRoomId(){ return 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
+  function uxMakeRoomId(){ return PROTOTYPE_ROOM_ID; }
 
   function uxBuildParticipantLink(){
-    const roomId = state.online.roomId || uxMakeRoomId();
+    const roomId = PROTOTYPE_ROOM_ID;
     state.online.roomId = roomId;
     const payload = uxEncodePayload({ study: state.study, p: state.p, createdAt: new Date().toISOString() });
     const url = new URL(location.href.split('#')[0]);
     url.searchParams.set('uxRole','participant');
     url.searchParams.set('uxMode','online');
-    url.searchParams.set('uxRoom',roomId);
-    if (payload) url.searchParams.set('uxCtx',payload);
+    // url.searchParams.set('uxRoom',roomId);
+    // if (payload) url.searchParams.set('uxCtx',payload);
     state.online.participantLink = url.toString();
     try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify({ study: state.study, p: state.p, roomId, createdAt: new Date().toISOString() })); } catch(e){}
     return state.online.participantLink;
@@ -8939,6 +8939,7 @@ Format:
 <script id="ux-online-screen-recording-fix">
 (function(){
   const ONLINE_KEY_PREFIX = 'uxlens_online_room_';
+  const PROTOTYPE_ROOM_ID = 'currentSession';
   const FRAME_INTERVAL_MS = 700;
   let participantFrameTimer = null;
   let researcherFrameTimer = null;
