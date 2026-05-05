@@ -12192,11 +12192,15 @@ Format:
 
   const ROOM_PREFIX = 'uxlens_online_room_';
   const CTX_PREFIX  = 'uxlens_online_ctx_';
+  const PROTOTYPE_ROOM_ID = 'currentSession';
   let researcherRoomRef = null;
   let participantPublishTimer = null;
 
   function safeJson(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
-  function roomId(){ return state && state.online && state.online.roomId ? state.online.roomId : new URLSearchParams(location.search).get('uxRoom') || ''; }
+function roomId(){
+  if (state && state.online) state.online.roomId = state.online.roomId || PROTOTYPE_ROOM_ID;
+  return PROTOTYPE_ROOM_ID;
+}
   function isParticipant(){ return state?.online?.mode === 'online' && state?.online?.role === 'participant'; }
   function isResearcher(){ return state?.online?.mode === 'online' && state?.online?.role === 'researcher'; }
   function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
@@ -12281,19 +12285,21 @@ Format:
     return ctx;
   }
 
-  function buildShortParticipantLink(){
-    let rid = roomId();
-    if (!rid) rid = 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
-    state.online = state.online || {};
-    state.online.roomId = rid;
-    const url = new URL(location.origin + location.pathname);
-    url.searchParams.set('uxRole', 'participant');
-    url.searchParams.set('uxMode', 'online');
-    url.searchParams.set('uxRoom', rid);
-    state.online.participantLink = url.toString();
-    saveRoomContext(rid);
-    return state.online.participantLink;
-  }
+function buildShortParticipantLink(){
+  const rid = PROTOTYPE_ROOM_ID;
+
+  state.online = state.online || {};
+  state.online.roomId = rid;
+
+  const url = new URL(location.origin + location.pathname);
+  url.searchParams.set('uxRole', 'participant');
+  url.searchParams.set('uxMode', 'online');
+
+  state.online.participantLink = url.toString();
+  saveRoomContext(rid);
+
+  return state.online.participantLink;
+}
 
   function publishDeviceState(extra){
     if (!isParticipant()) return;
@@ -12964,7 +12970,7 @@ Format:
   function uxForceOpenParticipantTestingView(){
     try {
       const params = new URLSearchParams(location.search);
-      const roomId = params.get('uxRoom') || (state.online && state.online.roomId) || '';
+      const roomId = PROTOTYPE_ROOM_ID;
 
       state.online = state.online || {};
       state.online.mode = 'online';
