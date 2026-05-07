@@ -2326,33 +2326,20 @@ body {
 
   /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
   const UXLENS_FB_CONFIG = {
-  apiKey: "AIzaSyDCuAheKyctLei2khA9ijbPKEzTa9TfRDA",
-  authDomain: "uxlens-63312.firebaseapp.com",
-  databaseURL: "https://uxlens-63312-default-rtdb.firebaseio.com",
-  projectId: "uxlens-63312",
-  storageBucket: "uxlens-63312.firebasestorage.app",
-  messagingSenderId: "835547455529",
-  appId: "1:835547455529:web:3b31e60d48b0e7325a3c38",
-  measurementId: "G-4MT6N5GLNM"
+  apiKey: "PASTE_KEY_IN_NETLIFY_ENV_ONLY",
+  authDomain: "uxlens-735af.firebaseapp.com",
+  databaseURL: "https://uxlens-735af-default-rtdb.firebaseio.com",
+  projectId: "uxlens-735af",
+  storageBucket: "uxlens-735af.firebasestorage.app",
+  messagingSenderId: "983927198291",
+  appId: "1:983927198291:web:e9edf153a06110d675eca6"
 };
   /* ── 2. FIREBASE INIT ─────────────────────────────────────────────── */
   window._uxFbDb = null;
   if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
     try {
-      // Force UXLens to use the correct Firebase project, not any old cached/default app
-let app;
-
-try {
-  const oldUxApp = firebase.apps.find(a => a.name === 'uxlens-sync');
-  app = oldUxApp || firebase.initializeApp(UXLENS_FB_CONFIG, 'uxlens-sync');
-
-  window._uxFbDb = firebase.database(app);
-  console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
-  console.log('[UXLens] Firebase active project:', app.options.projectId, app.options.databaseURL);
-} catch (e) {
-  console.error('[UXLens] Firebase init failed:', e);
-  window._uxFbDb = null;
-}
+      const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(UXLENS_FB_CONFIG);
+      window._uxFbDb = firebase.database(app);
       console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
     } catch(e) {
       console.error('[UXLens] Firebase init failed:', e);
@@ -8531,17 +8518,17 @@ Format:
   function uxSafeJsonParse(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
   function uxEncodePayload(obj){ try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch(e){ return ''; } }
   function uxDecodePayload(str){ try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e){ return null; } }
-  function uxMakeRoomId(){ return PROTOTYPE_ROOM_ID; }
+  function uxMakeRoomId(){ return 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
 
   function uxBuildParticipantLink(){
-    const roomId = PROTOTYPE_ROOM_ID;
+    const roomId = state.online.roomId || uxMakeRoomId();
     state.online.roomId = roomId;
     const payload = uxEncodePayload({ study: state.study, p: state.p, createdAt: new Date().toISOString() });
     const url = new URL(location.href.split('#')[0]);
     url.searchParams.set('uxRole','participant');
     url.searchParams.set('uxMode','online');
-    // url.searchParams.set('uxRoom',roomId);
-    // if (payload) url.searchParams.set('uxCtx',payload);
+    url.searchParams.set('uxRoom',roomId);
+    if (payload) url.searchParams.set('uxCtx',payload);
     state.online.participantLink = url.toString();
     try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify({ study: state.study, p: state.p, roomId, createdAt: new Date().toISOString() })); } catch(e){}
     return state.online.participantLink;
@@ -8743,7 +8730,19 @@ Format:
     else switchPhase('testing');
   };
 
-  window.uxParticipantDecline = function(){ uxSendRoomEvent('participant-left'); location.href = location.href.split('?')[0]; };
+  window.uxParticipantDecline = function(){
+    uxSendRoomEvent('participant-left');
+    try { window.close(); } catch(e){}
+    // Fallback if browser blocks window.close() (tab opened directly via URL)
+    setTimeout(function(){
+      const lobby = document.getElementById('ux-participant-lobby');
+      const card = lobby && lobby.querySelector('.ux-lobby-card');
+      if (card) {
+        card.innerHTML = '<div style="text-align:center;padding:40px 24px"><h2 style="font-size:22px;margin-bottom:10px;color:#1a1a2e">Session ended</h2><p style="color:#666;font-size:15px">You may close this tab.</p></div>';
+        if (lobby) lobby.classList.add('show');
+      }
+    }, 300);
+  };
 
   function uxSetParticipantOptionUI(type, enabled){
     state.recOpts[type] = !!enabled;
@@ -8939,7 +8938,6 @@ Format:
 <script id="ux-online-screen-recording-fix">
 (function(){
   const ONLINE_KEY_PREFIX = 'uxlens_online_room_';
-  const PROTOTYPE_ROOM_ID = 'currentSession';
   const FRAME_INTERVAL_MS = 700;
   let participantFrameTimer = null;
   let researcherFrameTimer = null;
@@ -12192,15 +12190,11 @@ Format:
 
   const ROOM_PREFIX = 'uxlens_online_room_';
   const CTX_PREFIX  = 'uxlens_online_ctx_';
-  const PROTOTYPE_ROOM_ID = 'currentSession';
   let researcherRoomRef = null;
   let participantPublishTimer = null;
 
   function safeJson(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
-function roomId(){
-  if (state && state.online) state.online.roomId = state.online.roomId || PROTOTYPE_ROOM_ID;
-  return PROTOTYPE_ROOM_ID;
-}
+  function roomId(){ return state && state.online && state.online.roomId ? state.online.roomId : new URLSearchParams(location.search).get('uxRoom') || ''; }
   function isParticipant(){ return state?.online?.mode === 'online' && state?.online?.role === 'participant'; }
   function isResearcher(){ return state?.online?.mode === 'online' && state?.online?.role === 'researcher'; }
   function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
@@ -12285,21 +12279,19 @@ function roomId(){
     return ctx;
   }
 
-function buildShortParticipantLink(){
-  const rid = PROTOTYPE_ROOM_ID;
-
-  state.online = state.online || {};
-  state.online.roomId = rid;
-
-  const url = new URL(location.origin + location.pathname);
-  url.searchParams.set('uxRole', 'participant');
-  url.searchParams.set('uxMode', 'online');
-
-  state.online.participantLink = url.toString();
-  saveRoomContext(rid);
-
-  return state.online.participantLink;
-}
+  function buildShortParticipantLink(){
+    let rid = roomId();
+    if (!rid) rid = 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+    state.online = state.online || {};
+    state.online.roomId = rid;
+    const url = new URL(location.origin + location.pathname);
+    url.searchParams.set('uxRole', 'participant');
+    url.searchParams.set('uxMode', 'online');
+    url.searchParams.set('uxRoom', rid);
+    state.online.participantLink = url.toString();
+    saveRoomContext(rid);
+    return state.online.participantLink;
+  }
 
   function publishDeviceState(extra){
     if (!isParticipant()) return;
@@ -12378,9 +12370,12 @@ function buildShortParticipantLink(){
   };
 
   const oldParticipantStart = window.uxParticipantStartTesting;
-  window.uxParticipantStartTesting = async function(){
-    await loadRoomContext(roomId());
+  window.uxParticipantStartTesting = function(){
+    // Call the core function synchronously first — lobby hides and testing view shows immediately.
+    // Don't await Firebase context load here; it would block the lobby from dismissing.
     const result = typeof oldParticipantStart === 'function' ? oldParticipantStart.apply(this, arguments) : undefined;
+    // Load room context in background after UI has already switched.
+    loadRoomContext(roomId()).catch(function(){});
     setTimeout(startParticipantPublishing, 250);
     return result;
   };
@@ -12960,80 +12955,972 @@ function buildShortParticipantLink(){
 
 
 
-<!-- UXLENS PATCH: Participant Start Testing button fallback fix only
-     Keeps existing code intact. This only guarantees the participant lobby button
-     opens the participant testing page even if the original online-mode switch fails. -->
-<script id="ux-participant-start-testing-fix-only">
+<!-- ═══════════════════════════════════════════════════════════════════════
+  UXLENS FINAL RESEARCHER TESTING ACTIONS HOTFIX
+  Scope: researcher testing window only.
+  Fixes: Download Recording, Download AI Insight, Synthesize → Analysis,
+  and Analyze Current Video Frame without changing Firebase sync or participant flow.
+═══════════════════════════════════════════════════════════════════════ -->
+<script id="uxlens-final-researcher-testing-actions-hotfix">
 (function(){
-  const previousParticipantStartTesting = window.uxParticipantStartTesting;
+  'use strict';
 
-  function uxForceOpenParticipantTestingView(){
+  try { if (typeof state !== 'undefined' && !window.state) window.state = state; } catch(e) {}
+
+  const previousDownloadRec = window.downloadRec;
+  const previousGenerateInsight = window.generateInsight;
+  const previousSynthesize = window.synthesizeSessionAndGoAnalysis;
+  const previousAnalyzeVisual = window.analyzeVisualFeedNow;
+
+  function isParticipantWindow(){
     try {
-      const params = new URLSearchParams(location.search);
-      const roomId = PROTOTYPE_ROOM_ID;
+      const p = new URLSearchParams(location.search);
+      return document.body.classList.contains('ux-online-participant') || p.get('uxRole') === 'participant' || state?.online?.role === 'participant';
+    } catch(e) { return false; }
+  }
 
-      state.online = state.online || {};
-      state.online.mode = 'online';
-      state.online.role = 'participant';
-      state.online.roomId = roomId;
-      state.online.participantReady = false;
-      state.online.participantDevices = { mic:false, webcam:false, screen:false };
+  function isResearcherTestingWindow(){
+    try {
+      if (isParticipantWindow()) return false;
+      const testingActive = document.getElementById('phase-testing')?.classList.contains('active');
+      const onlineResearcher = state?.online?.mode === 'online' && state?.online?.role === 'researcher';
+      const bodyResearcher = document.body.classList.contains('ux-online-researcher');
+      return !!(testingActive || onlineResearcher || bodyResearcher);
+    } catch(e) { return false; }
+  }
 
-      const lobby = document.getElementById('ux-participant-lobby');
-      if (lobby) {
-        lobby.classList.remove('show');
-        lobby.style.display = 'none';
+  function safeFilePart(v){
+    return String(v || 'participant').trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'participant';
+  }
+
+  function downloadBlobSafe(filename, blob){
+    if (!blob || !blob.size) { showToast?.('No recording found. Start and stop recording first.'); return false; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    return true;
+  }
+
+  function downloadTextSafe(filename, text){
+    const blob = new Blob([String(text || '')], { type:'text/plain;charset=utf-8' });
+    return downloadBlobSafe(filename, blob);
+  }
+
+  function htmlToText(html){
+    const div = document.createElement('div');
+    div.innerHTML = html || '';
+    return (div.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function getTranscriptTextSafe(session){
+    try {
+      if (session?.participantTranscript) return String(session.participantTranscript).trim();
+      if (session?.transcript) return htmlToText(session.transcript);
+      if (typeof window.getTranscriptText === 'function') {
+        const t = window.getTranscriptText();
+        if (t && String(t).trim()) return String(t).trim();
       }
+      return Array.from(document.querySelectorAll('#transcript-box .transcript-line')).map(l => l.textContent.trim()).filter(Boolean).join('\n');
+    } catch(e) { return ''; }
+  }
 
-      document.body.classList.add('ux-online-mode', 'ux-online-participant');
-      document.body.classList.remove('ux-online-researcher');
+  function normalizeNotes(obj){
+    const out = { says:[], thinks:[], does:[], feels:[] };
+    ['says','thinks','does','feels'].forEach(k => {
+      if (Array.isArray(obj?.[k])) out[k] = obj[k].map(x => String(x || '').trim()).filter(Boolean).slice(0, 8);
+    });
+    return out;
+  }
 
-      document.querySelectorAll('.phase').forEach(function(el){ el.classList.remove('active'); });
-      const testingPhase = document.getElementById('phase-testing');
-      if (testingPhase) testingPhase.classList.add('active');
+  function fallbackNotesFromEvidence(session){
+    const transcript = getTranscriptTextSafe(session);
+    const visual = Array.isArray(session?.visualObservations) ? session.visualObservations : (Array.isArray(state?.visualObservations) ? state.visualObservations : []);
+    const notes = { says:[], thinks:[], does:[], feels:[] };
 
-      document.querySelectorAll('.ps-btn').forEach(function(el){ el.classList.remove('active'); });
-      const testingBtn = document.querySelector('.ps-btn[data-phase="testing"]');
-      if (testingBtn) testingBtn.classList.add('active');
+    transcript.split('\n').map(v => v.trim()).filter(Boolean).forEach(line => {
+      if (/Session started|Session stopped|Listening|Speech error|Speech warning/i.test(line)) return;
+      const cleaned = line.replace(/^\[\d{1,2}:\d{2}(?::\d{2})?\]\s*/, '').trim();
+      if (cleaned) notes.says.push(cleaned.slice(0, 110));
+    });
 
-      const title = document.getElementById('page-title');
-      if (title) title.textContent = 'Participant Testing';
+    visual.forEach(o => {
+      if (o?.summary) notes.does.push(String(o.summary).slice(0, 110));
+      if (o?.possibleIssue) notes.thinks.push(String(o.possibleIssue).slice(0, 110));
+    });
 
-      const timer = document.getElementById('timer-badge');
-      if (timer) timer.style.display = '';
+    if (!notes.does.length && state?.study?.tasks?.length) notes.does.push('Attempted the assigned usability task flow.');
+    if (!notes.thinks.length && (transcript || visual.length)) notes.thinks.push('Needs clearer cues to complete the flow confidently.');
+    return normalizeNotes(notes);
+  }
 
-      ['webcam','mic','screen'].forEach(function(type){
-        try {
-          state.recOpts[type] = false;
-          const chk = document.getElementById('chk-' + type);
-          const row = document.getElementById('rec-' + type);
-          if (chk) chk.classList.remove('checked');
-          if (row) row.classList.remove('active');
-        } catch(e) {}
+  function getCurrentSessionSafe(){
+    try {
+      if (state.currentSession !== null && state.sessions?.[state.currentSession]) return state.sessions[state.currentSession];
+      if (state.sessions?.length) {
+        state.currentSession = state.sessions.length - 1;
+        return state.sessions[state.currentSession];
+      }
+      if (typeof window.saveSession === 'function') {
+        window.saveSession();
+        if (state.sessions?.length) {
+          state.currentSession = state.sessions.length - 1;
+          return state.sessions[state.currentSession];
+        }
+      }
+    } catch(e) { console.warn('[UXLens hotfix] session lookup failed:', e); }
+    return null;
+  }
+
+  function syncSessionEvidence(session){
+    if (!session) return;
+    session.participantTranscript = getTranscriptTextSafe(session);
+    session.visualObservations = JSON.parse(JSON.stringify(state.visualObservations || session.visualObservations || []));
+    session.deadClicks = state.deadClicks ?? session.deadClicks ?? 0;
+    session.duration = session.duration || (typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : '00:00');
+    session.efficiency = session.efficiency || Math.max(30, 100 - (state.deadClicks || 0) * 8);
+    if (state.recordingBlob?.size) session.recordingBlob = state.recordingBlob;
+    try { if (typeof persistSessionsToStorage === 'function') persistSessionsToStorage(); } catch(e) {}
+  }
+
+  function visualText(observations){
+    observations = Array.isArray(observations) ? observations : [];
+    if (!observations.length) return '(none)';
+    return observations.map(o => `[${o.timestamp || o.time || ''}] ${o.source || 'Screen'}: ${o.summary || o.observation || o.text || ''}${o.evidence ? ' | Evidence: ' + o.evidence : ''}${o.possibleIssue ? ' | Issue: ' + o.possibleIssue : ''}`).join('\n');
+  }
+
+  function buildFallbackInsight(session){
+    const transcript = getTranscriptTextSafe(session) || '(none)';
+    const visual = visualText(session?.visualObservations || state.visualObservations || []);
+    const tasks = (state.study?.tasks || []).map((t,i) => `${i+1}. ${t}`).join('\n') || '(none)';
+    const duration = session?.duration || (typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : '00:00');
+    const dead = session?.deadClicks ?? state.deadClicks ?? 0;
+    return `UXLens-AI Session Insight\n\nExecutive Summary\nThe session evidence has been captured from the transcript, participant screen observations, task list, and basic metrics. Use this report as a downloadable baseline when AI generation is unavailable.\n\nStudy Context\nProject: ${state.study?.projectName || 'Not specified'}\nGoal: ${state.study?.testGoal || 'Not specified'}\nParticipant: ${state.p?.id || 'P01'} ${state.p?.name || ''}\n\nTasks\n${tasks}\n\nMetrics\nDuration: ${duration}\nDead Clicks: ${dead}\nEfficiency Score: ${Math.max(30, 100 - Number(dead || 0) * 8)}/100\n\nTranscript Evidence\n${transcript}\n\nVideo-to-Text / Visual Evidence\n${visual}\n\nRecommended Next Steps\n1. Review the task moments where the participant slowed down or repeated actions.\n2. Compare transcript statements with visible screen behavior before finalizing issues.\n3. Convert the strongest evidence points into empathy map notes on the Analysis page.`;
+  }
+
+  async function buildAiInsight(session){
+    syncSessionEvidence(session);
+    const transcript = getTranscriptTextSafe(session) || '(none)';
+    const visual = visualText(session?.visualObservations || state.visualObservations || []);
+    const tasks = (state.study?.tasks || []).map((t,i) => `${i+1}. ${t}`).join('\n') || '(none)';
+    const prompt = `${typeof buildCtx === 'function' ? buildCtx() : 'UX researcher AI'}\n\nONLINE USABILITY TEST SESSION\n\nTasks:\n${tasks}\n\nParticipant transcript:\n${transcript}\n\nParticipant screen / video-to-text observations:\n${visual}\n\nMetrics:\nDuration: ${session?.duration || (typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : '00:00')}\nDead clicks: ${session?.deadClicks ?? state.deadClicks ?? 0}\n\nGenerate a professional UX AI insight report with these sections:\n1. Executive Summary\n2. Task Completion Evidence\n3. Key Participant Behaviors\n4. Usability Issues\n5. Recommendations\n6. Priority Next Steps\n\nRules: Be evidence-based. Use only setup context, transcript, screen observations, task status, and metrics. Keep it concise and actionable.`;
+    try {
+      if (typeof window.callGemini === 'function') {
+        const text = await window.callGemini(prompt, 2600);
+        const cleaned = String(text || '').replace(/^```(?:\w+)?/gm,'').replace(/```$/gm,'').trim();
+        if (cleaned) return cleaned;
+      }
+    } catch(e) { console.warn('[UXLens hotfix] AI insight fallback used:', e); }
+    return buildFallbackInsight(session);
+  }
+
+  async function generateNotesForAnalysis(session){
+    syncSessionEvidence(session);
+    const fallback = fallbackNotesFromEvidence(session);
+    try {
+      if (typeof window.callGemini === 'function') {
+        const prompt = `${typeof buildCtx === 'function' ? buildCtx() : 'UX researcher AI'}\n\nTranscript:\n${getTranscriptTextSafe(session) || '(none)'}\n\nVideo-to-text observations:\n${visualText(session?.visualObservations || state.visualObservations || [])}\n\nCreate short empathy-map notes for a UX analysis board. Return ONLY valid JSON: {"says":["..."],"thinks":["..."],"does":["..."],"feels":["..."]}. Says must come from transcript. Does must be visible actions. Thinks and feels must be supported by evidence.`;
+        const text = await window.callGemini(prompt, 1500);
+        const parsed = typeof parseJsonObject === 'function' ? parseJsonObject(text) : JSON.parse(String(text || '{}').match(/\{[\s\S]*\}/)?.[0] || '{}');
+        const notes = normalizeNotes(parsed);
+        if (Object.values(notes).some(arr => arr.length)) return notes;
+      }
+    } catch(e) { console.warn('[UXLens hotfix] notes fallback used:', e); }
+    return fallback;
+  }
+
+  function captureBestResearcherFrame(){
+    const candidates = [
+      document.getElementById('screen-vid'),
+      document.getElementById('ux-researcher-live-screen-img'),
+      document.getElementById('ux-researcher-mirror-img'),
+      document.getElementById('screen-mirror-img'),
+      document.querySelector('#screen-preview-card img')
+    ].filter(Boolean);
+
+    try {
+      const rid = state?.online?.roomId || new URLSearchParams(location.search).get('uxRoom') || '';
+      if (rid) {
+        const prefixes = ['uxlens_online_room_'];
+        const suffixes = ['_screen_visible_frame_v2','_mirror_frame','_screen_frame'];
+        for (const pre of prefixes) for (const suf of suffixes) {
+          const raw = localStorage.getItem(pre + rid + suf);
+          const p = raw ? JSON.parse(raw) : null;
+          if (p?.frame && Date.now() - Number(p.at || Date.now()) < 30000) return p.frame;
+        }
+      }
+    } catch(e) {}
+
+    for (const src of candidates) {
+      try {
+        const isVideo = src.tagName === 'VIDEO';
+        const w = isVideo ? src.videoWidth : src.naturalWidth;
+        const h = isVideo ? src.videoHeight : src.naturalHeight;
+        if (!w || !h) continue;
+        const c = document.createElement('canvas');
+        c.width = 1280; c.height = 720;
+        const ctx = c.getContext('2d', { alpha:false });
+        ctx.fillStyle = '#101225'; ctx.fillRect(0,0,c.width,c.height);
+        const scale = Math.min(c.width / w, c.height / h);
+        const dw = Math.round(w * scale), dh = Math.round(h * scale);
+        ctx.drawImage(src, Math.round((c.width - dw)/2), Math.round((c.height - dh)/2), dw, dh);
+        return c.toDataURL('image/jpeg', 0.72);
+      } catch(e) {}
+    }
+    return null;
+  }
+
+  window.analyzeVisualFeedNow = async function(){
+    if (!isResearcherTestingWindow()) return previousAnalyzeVisual ? previousAnalyzeVisual.apply(this, arguments) : undefined;
+    if (state.visualCaptureBusy) return;
+    const frame = captureBestResearcherFrame();
+    if (!frame) { showToast?.('Waiting for participant screen frame'); return; }
+    state.visualCaptureBusy = true;
+    const status = document.getElementById('visual-feed-status');
+    if (status) status.textContent = 'Analyzing…';
+    try {
+      let obs = null;
+      if (typeof window.callGeminiVision === 'function') {
+        const prompt = `${typeof buildCtx === 'function' ? buildCtx() : 'UX researcher AI'}\n\nAnalyze this participant screen frame from a usability test. Return ONLY compact JSON: {"summary":"max 14 words","evidence":"max 14 words","possibleIssue":"max 12 words or empty","severity":"Low/Medium/High","stickyNotes":{"says":[],"thinks":[],"does":["max 10 words"],"feels":[]}}.`;
+        const text = await window.callGeminiVision(prompt, frame, 650);
+        const parsed = typeof parseJsonObject === 'function' ? parseJsonObject(text) : JSON.parse(String(text || '{}').match(/\{[\s\S]*\}/)?.[0] || '{}');
+        if (parsed) obs = parsed;
+      }
+      const finalObs = {
+        timestamp: typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : '00:00',
+        source: 'Participant Screen',
+        summary: String(obs?.summary || 'Participant screen frame captured for analysis.').slice(0, 140),
+        evidence: String(obs?.evidence || '').slice(0, 140),
+        possibleIssue: String(obs?.possibleIssue || obs?.issue || '').slice(0, 120),
+        severity: obs?.severity || 'Low',
+        stickyNotes: obs?.stickyNotes || {}
+      };
+      state.visualObservations = Array.isArray(state.visualObservations) ? state.visualObservations : [];
+      state.visualObservations.push(finalObs);
+      try { if (typeof addVisualObservationStickyNotes === 'function') addVisualObservationStickyNotes(finalObs); } catch(e) {}
+      try { if (typeof renderVisualObservations === 'function') renderVisualObservations(); } catch(e) {}
+      const session = state.currentSession !== null ? state.sessions?.[state.currentSession] : null;
+      if (session) syncSessionEvidence(session);
+      showToast?.('Screen frame analyzed');
+    } catch(e) {
+      console.error('[UXLens hotfix] analyze frame failed:', e);
+      showToast?.('Could not analyze current frame');
+    } finally {
+      state.visualCaptureBusy = false;
+      if (status) status.textContent = state.isRecording ? 'Auto analyzing' : 'Idle';
+    }
+  };
+
+  window.downloadRec = function(){
+    if (!isResearcherTestingWindow()) return previousDownloadRec ? previousDownloadRec.apply(this, arguments) : undefined;
+    try {
+      const rec = state.mediaRecorder;
+      if (rec && rec.state === 'recording') { showToast?.('Stop recording first, then download'); return; }
+      let blob = state.recordingBlob;
+      if ((!blob || !blob.size) && Array.isArray(state.recordingChunks) && state.recordingChunks.length) blob = new Blob(state.recordingChunks, { type:'video/webm' });
+      const session = state.currentSession !== null ? state.sessions?.[state.currentSession] : state.sessions?.[state.sessions?.length - 1];
+      if ((!blob || !blob.size) && session?.recordingBlob) blob = session.recordingBlob;
+      if (blob?.size) {
+        state.recordingBlob = blob;
+        downloadBlobSafe('uxlens-screen-recording-' + safeFilePart(state.p?.name || state.p?.id || 'participant') + '.webm', blob);
+        showToast?.('Recording downloaded');
+        return;
+      }
+      showToast?.('No recording found. Start, stop, then download.');
+    } catch(e) {
+      console.error('[UXLens hotfix] recording download failed:', e);
+      showToast?.('Recording download failed');
+    }
+  };
+
+  window.generateInsight = async function(){
+    if (!isResearcherTestingWindow()) return previousGenerateInsight ? previousGenerateInsight.apply(this, arguments) : undefined;
+    const loading = document.getElementById('insight-loading');
+    const out = document.getElementById('insight-out');
+    if (loading) loading.classList.add('show');
+    if (out) { out.style.display = 'none'; out.textContent = ''; }
+    try {
+      if (state.isRecording && typeof window.stopRec === 'function') await window.stopRec();
+      const session = getCurrentSessionSafe();
+      if (!session) { showToast?.('No session evidence found'); return; }
+      const report = await buildAiInsight(session);
+      session.aiInsight = report;
+      syncSessionEvidence(session);
+      if (out) { out.textContent = report; out.style.display = 'block'; }
+      downloadTextSafe('uxlens-ai-insight-' + safeFilePart(session.name || session.id || state.p?.id || 'participant') + '.txt', report);
+      showToast?.('AI Insight downloaded');
+    } catch(e) {
+      console.error('[UXLens hotfix] AI insight failed:', e);
+      showToast?.('AI insight failed');
+    } finally {
+      if (loading) loading.classList.remove('show');
+    }
+  };
+
+  window.synthesizeSessionAndGoAnalysis = async function(){
+    if (!isResearcherTestingWindow()) return previousSynthesize ? previousSynthesize.apply(this, arguments) : undefined;
+    const btn = document.getElementById('synthesize-btn');
+    const oldText = btn ? btn.textContent : 'Synthesize → Analysis';
+    if (btn) { btn.disabled = true; btn.textContent = 'Synthesizing…'; }
+    try {
+      if (state.isRecording && typeof window.stopRec === 'function') await window.stopRec();
+      const session = getCurrentSessionSafe();
+      if (!session) { showToast?.('No session found to synthesize'); return; }
+      syncSessionEvidence(session);
+      const notes = await generateNotesForAnalysis(session);
+      state.notes = JSON.parse(JSON.stringify(notes));
+      session.notes = JSON.parse(JSON.stringify(notes));
+      session.videoToTextSummary = visualText(session.visualObservations || []);
+      try { if (typeof persistSessionsToStorage === 'function') persistSessionsToStorage(); } catch(e) {}
+      if (typeof switchPhase === 'function') switchPhase('analysis');
+      if (typeof renderInterviewList === 'function') renderInterviewList();
+      if (typeof renderStickies === 'function') renderStickies();
+      const analysisBtn = document.getElementById('analysis-btn');
+      if (analysisBtn) analysisBtn.style.display = 'block';
+      showToast?.('Analysis ready');
+    } catch(e) {
+      console.error('[UXLens hotfix] synthesize failed:', e);
+      showToast?.('Could not synthesize session');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText || 'Synthesize → Analysis'; }
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    try { if (typeof state !== 'undefined' && !window.state) window.state = state; } catch(e) {}
+    document.querySelectorAll('#float-bar .fbar-btn').forEach(btn => {
+      const text = (btn.textContent || '').toLowerCase();
+      if (text.includes('download recording') || text.includes('download ai insight') || text.includes('synthesize')) {
+        btn.disabled = false;
+        btn.classList.remove('ux-disabled-action');
+        btn.title = '';
+      }
+    });
+  });
+
+  console.log('[UXLens] Final researcher testing actions hotfix loaded.');
+})();
+</script>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+  UXLENS FINAL POST-STOP ENABLE PATCH
+  Scope: researcher testing window only.
+  Purpose: after Stop is clicked, enable Download Recording, Download AI Insight,
+  and Synthesize → Analysis buttons even if older online gates still marked them disabled.
+═══════════════════════════════════════════════════════════════════════ -->
+<script id="uxlens-final-post-stop-enable-patch">
+(function(){
+  'use strict';
+
+  function toast(msg){ try { if (typeof showToast === 'function') showToast(msg); } catch(e) {} }
+
+  function hasState(){ try { return typeof state !== 'undefined' && !!state; } catch(e) { return false; } }
+
+  function isParticipant(){
+    try {
+      const p = new URLSearchParams(location.search);
+      return document.body.classList.contains('ux-online-participant') || p.get('uxRole') === 'participant' || (hasState() && state.online && state.online.role === 'participant');
+    } catch(e) { return false; }
+  }
+
+  function isResearcherContext(){
+    if (isParticipant()) return false;
+    try {
+      return document.getElementById('phase-testing')?.classList.contains('active') ||
+             document.body.classList.contains('ux-online-researcher') ||
+             (hasState() && state.online && state.online.role === 'researcher') ||
+             !new URLSearchParams(location.search).get('uxRole');
+    } catch(e) { return true; }
+  }
+
+  function actionButtons(){
+    return Array.from(document.querySelectorAll('#float-bar .fbar-btn')).filter(function(btn){
+      const t = (btn.textContent || '').toLowerCase();
+      return t.includes('download recording') || t.includes('download ai insight') || t.includes('synthesize');
+    });
+  }
+
+  function setPostStopButtons(enabled){
+    actionButtons().forEach(function(btn){
+      btn.disabled = !enabled;
+      btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      btn.classList.toggle('ux-disabled-action', !enabled);
+      btn.style.pointerEvents = enabled ? 'auto' : 'none';
+      btn.style.opacity = enabled ? '' : '.48';
+      btn.title = enabled ? '' : 'Available after you stop the session.';
+    });
+  }
+
+  function getTranscriptHtml(){
+    const box = document.getElementById('transcript-box');
+    return box ? box.innerHTML : '';
+  }
+
+  function ensureOneSavedSession(){
+    if (!hasState()) return null;
+    state.sessions = Array.isArray(state.sessions) ? state.sessions : [];
+    if (state.sessions.length && state.currentSession !== null && state.sessions[state.currentSession]) return state.sessions[state.currentSession];
+    if (state.sessions.length) {
+      state.currentSession = state.sessions.length - 1;
+      return state.sessions[state.currentSession];
+    }
+    const duration = typeof fmtTime === 'function' ? fmtTime(state.timerSec || 0) : '00:00';
+    const session = {
+      id: (state.p && state.p.id) || 'P01',
+      name: (state.p && state.p.name) || '',
+      duration: duration,
+      timestamp: new Date().toLocaleString(),
+      deadClicks: state.deadClicks || 0,
+      efficiency: Math.max(30, 100 - Number(state.deadClicks || 0) * 8),
+      transcript: getTranscriptHtml(),
+      participantTranscript: (typeof getTranscriptText === 'function' ? getTranscriptText() : ''),
+      visualObservations: JSON.parse(JSON.stringify(state.visualObservations || [])),
+      notes: JSON.parse(JSON.stringify(state.notes || { says:[], thinks:[], does:[], feels:[] }))
+    };
+    if (state.recordingBlob && state.recordingBlob.size) session.recordingBlob = state.recordingBlob;
+    state.sessions.push(session);
+    state.currentSession = state.sessions.length - 1;
+    return session;
+  }
+
+  function markStoppedAndEnable(){
+    if (!isResearcherContext() || !hasState()) return;
+    state.isRecording = false;
+    state.online = state.online || {};
+    state.online.recordingDone = true;
+    state.recordingDone = true;
+
+    if (state.mediaRecorder && state.mediaRecorder.state === 'recording') return;
+
+    ensureOneSavedSession();
+
+    const analysisBtn = document.getElementById('analysis-btn');
+    if (analysisBtn) analysisBtn.style.display = 'block';
+
+    setPostStopButtons(true);
+
+    try { if (typeof uxUpdateOnlineStatusUI === 'function') uxUpdateOnlineStatusUI(); } catch(e) {}
+    try { if (typeof renderInterviewList === 'function') renderInterviewList(); } catch(e) {}
+    try { if (typeof persistSessionsToStorage === 'function') persistSessionsToStorage(); } catch(e) {}
+  }
+
+  function markStartedAndDisable(){
+    if (!isResearcherContext() || !hasState()) return;
+    state.online = state.online || {};
+    state.online.recordingDone = false;
+    state.recordingDone = false;
+    setPostStopButtons(false);
+  }
+
+  const oldStartRec = window.startRec;
+  window.startRec = async function(){
+    markStartedAndDisable();
+    const result = oldStartRec ? await oldStartRec.apply(this, arguments) : undefined;
+    return result;
+  };
+
+  const oldStopRec = window.stopRec;
+  window.stopRec = async function(){
+    let result;
+    try {
+      result = oldStopRec ? await oldStopRec.apply(this, arguments) : undefined;
+    } finally {
+      // MediaRecorder creates blob asynchronously; enable once immediately and again after onstop fires.
+      setTimeout(markStoppedAndEnable, 0);
+      setTimeout(markStoppedAndEnable, 350);
+      setTimeout(markStoppedAndEnable, 1000);
+    }
+    return result;
+  };
+
+  // Some earlier scripts call this repeatedly and can re-disable the buttons.
+  const oldGate = window.uxUpdateResearcherActionGates;
+  window.uxUpdateResearcherActionGates = function(){
+    const result = oldGate ? oldGate.apply(this, arguments) : undefined;
+    try {
+      if (isResearcherContext() && hasState() && (state.recordingDone || (state.online && state.online.recordingDone))) {
+        setPostStopButtons(true);
+      }
+    } catch(e) {}
+    return result;
+  };
+
+  // Button-level fallback: even if another stopRec exits early, clicking Stop will unlock post-session actions.
+  document.addEventListener('click', function(e){
+    const btn = e.target && e.target.closest ? e.target.closest('#float-bar .fbar-btn') : null;
+    if (!btn) return;
+    const label = (btn.textContent || '').trim().toLowerCase();
+    if (label === 'start') {
+      setTimeout(markStartedAndDisable, 50);
+    }
+    if (label === 'stop') {
+      setTimeout(markStoppedAndEnable, 250);
+      setTimeout(markStoppedAndEnable, 1000);
+    }
+  }, true);
+
+  // Initial page state: lock these until a stop has happened, but keep them unlocked if session already exists.
+  document.addEventListener('DOMContentLoaded', function(){
+    if (!isResearcherContext() || !hasState()) return;
+    const hasStoppedSession = !!(state.recordingDone || (state.online && state.online.recordingDone) || (Array.isArray(state.sessions) && state.sessions.length));
+    setPostStopButtons(hasStoppedSession);
+  });
+
+  window.uxForceEnableResearcherActions = markStoppedAndEnable;
+  console.log('[UXLens] Post-stop enable patch loaded.');
+})();
+</script>
+
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+  UXLENS FINAL AUDIO + THINK-ALOUD PATCH
+  Scope: researcher testing window only.
+  Purpose:
+  - Keep existing sync/buttons/UI intact.
+  - Ensure the downloaded recording includes microphone audio.
+  - Make think-aloud live transcript restart safely without repeated aborted spam.
+═══════════════════════════════════════════════════════════════════════ -->
+<script id="uxlens-final-audio-thinkaloud-patch">
+(function(){
+  'use strict';
+
+  const finalAudio = {
+    recorder: null,
+    chunks: [],
+    blob: null,
+    canvas: null,
+    ctx: null,
+    drawTimer: null,
+    audioCtx: null,
+    destination: null,
+    stream: null,
+    stopping: false,
+    stopPromise: null,
+    stopResolve: null,
+    srRestartTimer: null,
+    srLastError: '',
+    srLastErrorAt: 0
+  };
+
+  function toast(msg){ try { if (typeof showToast === 'function') showToast(msg); } catch(e) {} }
+  function hasState(){ try { return typeof state !== 'undefined' && !!state; } catch(e) { return false; } }
+  function isParticipant(){
+    try {
+      const p = new URLSearchParams(location.search);
+      return document.body.classList.contains('ux-online-participant') || p.get('uxRole') === 'participant' || (hasState() && state.online && state.online.role === 'participant');
+    } catch(e) { return false; }
+  }
+  function isResearcherTesting(){
+    if (isParticipant()) return false;
+    try {
+      return document.getElementById('phase-testing')?.classList.contains('active') ||
+        document.body.classList.contains('ux-online-researcher') ||
+        (hasState() && state.online && state.online.role === 'researcher') ||
+        !new URLSearchParams(location.search).get('uxRole');
+    } catch(e) { return true; }
+  }
+  function safeFilePart(v){ return String(v || 'participant').replace(/[^a-z0-9_-]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,60) || 'participant'; }
+  function fmtSafe(sec){ try { return typeof fmtTime === 'function' ? fmtTime(sec || 0) : '00:00'; } catch(e) { return '00:00'; } }
+  function liveTracks(stream, kind){
+    try { return stream && stream.getTracks ? stream.getTracks().filter(t => (!kind || t.kind === kind) && t.readyState === 'live') : []; } catch(e) { return []; }
+  }
+  function setMicCheckbox(on){
+    try {
+      state.recOpts = state.recOpts || {};
+      state.recOpts.mic = !!on;
+      document.getElementById('chk-mic')?.classList.toggle('checked', !!on);
+      document.getElementById('rec-mic')?.classList.toggle('active', !!on);
+    } catch(e) {}
+  }
+  function updateMicUI(on, label){
+    try {
+      const dot = document.getElementById('mic-dot-test');
+      const status = document.getElementById('mic-status-test');
+      if (dot) dot.className = 'mic-dot' + (on ? ' active' : '');
+      if (status) status.textContent = on ? (label || '🎙️ Think-aloud listening') : 'Mic off';
+    } catch(e) {}
+  }
+  function addTranscript(text){ try { if (typeof addTranscriptLine === 'function') addTranscriptLine(text); } catch(e) {} }
+
+  async function ensureMicForThinkAloud(){
+    if (!hasState()) return null;
+    try {
+      if (state.micStream && liveTracks(state.micStream,'audio').length) {
+        state.micActive = true;
+        setMicCheckbox(true);
+        updateMicUI(true);
+        return state.micStream;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
-
-      if (typeof renderActiveTasks === 'function') renderActiveTasks();
-      if (typeof showToast === 'function') showToast('Participant testing view opened. Click I’m Ready when ready.');
-    } catch(err) {
-      console.error('[UXLens] Participant Start Testing fallback failed:', err);
+      state.micStream = stream;
+      state.micActive = true;
+      setMicCheckbox(true);
+      updateMicUI(true);
+      return stream;
+    } catch(e) {
+      console.error('[UXLens audio patch] Mic permission failed:', e);
+      state.micActive = false;
+      setMicCheckbox(false);
+      updateMicUI(false);
+      toast('Mic permission needed for audio + think-aloud transcript');
+      return null;
     }
   }
 
-  window.uxParticipantStartTesting = function(){
-    try {
-      if (typeof previousParticipantStartTesting === 'function') previousParticipantStartTesting.apply(this, arguments);
-    } catch(err) {
-      console.error('[UXLens] Original Start Testing failed, using fallback:', err);
+  function getBestVisualSource(){
+    const ids = ['screen-vid','ux-researcher-live-screen-video','webcam-vid'];
+    for (const id of ids) {
+      const v = document.getElementById(id);
+      if (v && v.tagName === 'VIDEO' && (v.videoWidth || liveTracks(v.srcObject,'video').length)) return { el:v, type:'video' };
     }
+    const imgIds = ['ux-researcher-live-screen-img','ux-researcher-mirror-img','ux-online-screen-mirror-img','screen-mirror-img'];
+    for (const id of imgIds) {
+      const img = document.getElementById(id);
+      if (img && img.src && (img.naturalWidth || img.complete)) return { el:img, type:'image' };
+    }
+    try {
+      const rid = state?.online?.roomId || new URLSearchParams(location.search).get('uxRoom') || '';
+      if (rid) {
+        const suffixes = ['_screen_visible_frame_v2','_mirror_frame','_screen_frame'];
+        for (const suf of suffixes) {
+          const raw = localStorage.getItem('uxlens_online_room_' + rid + suf);
+          const p = raw ? JSON.parse(raw) : null;
+          if (p?.frame && Date.now() - Number(p.at || Date.now()) < 45000) return { frame:p.frame, type:'frame' };
+        }
+      }
+    } catch(e) {}
+    return null;
+  }
 
-    setTimeout(function(){
-      const testingPhase = document.getElementById('phase-testing');
-      const lobby = document.getElementById('ux-participant-lobby');
-      const stillInLobby = lobby && (lobby.classList.contains('show') || getComputedStyle(lobby).display !== 'none');
-      const testingOpen = testingPhase && testingPhase.classList.contains('active');
-      if (!testingOpen || stillInLobby) uxForceOpenParticipantTestingView();
-    }, 50);
+  function drawContain(ctx, source, cw, ch){
+    const sw = source.videoWidth || source.naturalWidth || source.width || 1;
+    const sh = source.videoHeight || source.naturalHeight || source.height || 1;
+    const scale = Math.min(cw / sw, ch / sh);
+    const w = Math.round(sw * scale), h = Math.round(sh * scale);
+    const x = Math.round((cw - w) / 2), y = Math.round((ch - h) / 2);
+    ctx.drawImage(source, x, y, w, h);
+  }
+
+  function setupCanvasRecorder(){
+    const c = document.createElement('canvas');
+    c.width = 1920;
+    c.height = 1080;
+    const ctx = c.getContext('2d', { alpha:false });
+    finalAudio.canvas = c;
+    finalAudio.ctx = ctx;
+
+    let frameImg = null;
+    finalAudio.drawTimer = setInterval(function(){
+      try {
+        ctx.fillStyle = '#101225';
+        ctx.fillRect(0,0,c.width,c.height);
+        const src = getBestVisualSource();
+        if (src?.type === 'video' || src?.type === 'image') {
+          drawContain(ctx, src.el, c.width, c.height);
+        } else if (src?.type === 'frame') {
+          if (!frameImg || frameImg.src !== src.frame) {
+            frameImg = new Image();
+            frameImg.src = src.frame;
+          }
+          if (frameImg.complete && frameImg.naturalWidth) drawContain(ctx, frameImg, c.width, c.height);
+        } else {
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '700 44px Plus Jakarta Sans, Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('UXLens Session Recording', c.width/2, c.height/2 - 18);
+          ctx.font = '400 26px Plus Jakarta Sans, Arial, sans-serif';
+          ctx.fillStyle = '#cbd5e1';
+          ctx.fillText('No screen frame available; audio and transcript are still captured.', c.width/2, c.height/2 + 30);
+        }
+        ctx.fillStyle = 'rgba(0,0,0,.55)';
+        ctx.fillRect(24,24,270,64);
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 26px Plus Jakarta Sans, Arial, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('UXLens  ' + fmtSafe(state?.timerSec || 0), 44, 66);
+      } catch(e) {}
+    }, 1000/24);
+
+    return c.captureStream ? c.captureStream(30) : null;
+  }
+
+  async function addAudioToDestination(stream){
+    if (!stream || !finalAudio.audioCtx || !finalAudio.destination) return;
+    const audios = liveTracks(stream, 'audio');
+    if (!audios.length) return;
+    try {
+      const clone = new MediaStream(audios.map(t => t.clone ? t.clone() : t));
+      const source = finalAudio.audioCtx.createMediaStreamSource(clone);
+      source.connect(finalAudio.destination);
+    } catch(e) { console.warn('[UXLens audio patch] Could not add audio source:', e); }
+  }
+
+  function pickMime(){
+    const types = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=h264,opus',
+      'video/webm'
+    ];
+    return types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  async function startFinalAudioRecorder(){
+    if (!isResearcherTesting() || !window.MediaRecorder) return false;
+    try { await ensureMicForThinkAloud(); } catch(e) {}
+
+    try {
+      if (finalAudio.recorder && finalAudio.recorder.state === 'recording') return true;
+      stopFinalDrawOnly();
+      finalAudio.chunks = [];
+      finalAudio.blob = null;
+      finalAudio.stopping = false;
+      finalAudio.stopPromise = new Promise(resolve => { finalAudio.stopResolve = resolve; });
+
+      const videoStream = setupCanvasRecorder();
+      if (!videoStream) { toast('Canvas recording is not supported in this browser'); return false; }
+
+      const AC = window.AudioContext || window.webkitAudioContext;
+      finalAudio.audioCtx = AC ? new AC() : null;
+      finalAudio.destination = finalAudio.audioCtx ? finalAudio.audioCtx.createMediaStreamDestination() : null;
+      if (finalAudio.audioCtx && finalAudio.audioCtx.state === 'suspended') await finalAudio.audioCtx.resume();
+
+      await addAudioToDestination(state?.micStream);
+      await addAudioToDestination(state?.screenStream);
+      try {
+        const v = document.getElementById('screen-vid');
+        if (v?.srcObject) await addAudioToDestination(v.srcObject);
+      } catch(e) {}
+
+      const finalStream = new MediaStream();
+      liveTracks(videoStream, 'video').forEach(t => finalStream.addTrack(t));
+      if (finalAudio.destination) liveTracks(finalAudio.destination.stream, 'audio').forEach(t => finalStream.addTrack(t));
+
+      finalAudio.stream = finalStream;
+      state.recordingStream = finalStream;
+      state.recordingChunks = finalAudio.chunks;
+
+      const mime = pickMime();
+      const opts = mime ? { mimeType:mime, videoBitsPerSecond:7000000, audioBitsPerSecond:128000 } : { videoBitsPerSecond:7000000, audioBitsPerSecond:128000 };
+      const rec = new MediaRecorder(finalStream, opts);
+      finalAudio.recorder = rec;
+      state.mediaRecorder = rec;
+      rec.ondataavailable = function(e){ if (e.data && e.data.size) finalAudio.chunks.push(e.data); };
+      rec.onerror = function(e){ console.error('[UXLens audio patch] recorder error:', e.error || e); toast('Recording error'); };
+      rec.onstop = function(){
+        try {
+          const type = rec.mimeType || mime || 'video/webm';
+          const blob = new Blob(finalAudio.chunks, { type });
+          finalAudio.blob = blob;
+          state.recordingBlob = blob;
+          state.recordingChunks = finalAudio.chunks;
+          const session = Array.isArray(state.sessions) && state.currentSession !== null ? state.sessions[state.currentSession] : null;
+          if (session && blob.size) session.recordingBlob = blob;
+        } catch(e) { console.error('[UXLens audio patch] blob build failed:', e); }
+        cleanupFinalRecorderStreams();
+        if (finalAudio.stopResolve) finalAudio.stopResolve(finalAudio.blob || state.recordingBlob || null);
+        finalAudio.stopResolve = null;
+      };
+      rec.start(1000);
+      return true;
+    } catch(e) {
+      console.error('[UXLens audio patch] Could not start audio recording:', e);
+      toast('Could not start audio recording');
+      cleanupFinalRecorderStreams();
+      return false;
+    }
+  }
+
+  function stopFinalDrawOnly(){
+    if (finalAudio.drawTimer) clearInterval(finalAudio.drawTimer);
+    finalAudio.drawTimer = null;
+  }
+
+  function cleanupFinalRecorderStreams(){
+    stopFinalDrawOnly();
+    try { if (finalAudio.stream) finalAudio.stream.getTracks().forEach(t => t.stop()); } catch(e) {}
+    finalAudio.stream = null;
+    try { if (finalAudio.audioCtx && finalAudio.audioCtx.state !== 'closed') finalAudio.audioCtx.close(); } catch(e) {}
+    finalAudio.audioCtx = null;
+    finalAudio.destination = null;
+  }
+
+  async function stopFinalAudioRecorder(){
+    const rec = finalAudio.recorder;
+    if (!rec) return finalAudio.blob || state?.recordingBlob || null;
+    if (finalAudio.stopping) return finalAudio.stopPromise;
+    finalAudio.stopping = true;
+    try {
+      if (rec.state === 'recording' || rec.state === 'paused') rec.stop();
+      else if (finalAudio.stopResolve) finalAudio.stopResolve(finalAudio.blob || state?.recordingBlob || null);
+    } catch(e) {
+      console.warn('[UXLens audio patch] recorder stop warning:', e);
+      if (finalAudio.stopResolve) finalAudio.stopResolve(finalAudio.blob || state?.recordingBlob || null);
+    }
+    return finalAudio.stopPromise;
+  }
+
+  function downloadBlob(name, blob){
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1200);
+  }
+
+  function startThinkAloudRecognition(){
+    if (!hasState() || !state.micActive) return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { addTranscript('[Speech recognition not supported in this browser]'); return; }
+    if (state.srStarting) return;
+    try { if (state.sr) { state.sr.onend = null; state.sr.onerror = null; state.sr.stop(); } } catch(e) {}
+    state.sr = null;
+    state.srStarting = true;
+
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+
+    r.onstart = function(){
+      state.srStarting = false;
+      state.sr = r;
+      updateMicUI(true, '🎙️ Think-aloud listening');
+      const txt = typeof getTranscriptText === 'function' ? getTranscriptText() : '';
+      if (!/Listening/i.test(txt.slice(-120))) addTranscript('[Listening...]');
+    };
+    r.onresult = function(e){
+      try {
+        let finalText = '';
+        for (let i=e.resultIndex; i<e.results.length; i++) {
+          if (e.results[i].isFinal && e.results[i][0]?.transcript) finalText += e.results[i][0].transcript + ' ';
+        }
+        finalText = finalText.trim();
+        if (finalText) addTranscript(finalText);
+      } catch(err) { console.error('[UXLens transcript] result error:', err); }
+    };
+    r.onerror = function(e){
+      state.srStarting = false;
+      const err = e?.error || 'unknown';
+      const now = Date.now();
+      const noisy = ['aborted','no-speech','audio-capture'];
+      if (!noisy.includes(err) || finalAudio.srLastError !== err || now - finalAudio.srLastErrorAt > 8000) {
+        addTranscript('[Speech status: ' + err + ']');
+      }
+      finalAudio.srLastError = err;
+      finalAudio.srLastErrorAt = now;
+    };
+    r.onend = function(){
+      state.srStarting = false;
+      if (state.sr === r) state.sr = null;
+      clearTimeout(finalAudio.srRestartTimer);
+      if (state.micActive && state.isRecording) {
+        finalAudio.srRestartTimer = setTimeout(function(){
+          if (state.micActive && state.isRecording && !state.sr && !state.srStarting) startThinkAloudRecognition();
+        }, 900);
+      }
+    };
+    try { r.start(); } catch(e) {
+      state.srStarting = false;
+      console.warn('[UXLens transcript] start failed:', e);
+      clearTimeout(finalAudio.srRestartTimer);
+      finalAudio.srRestartTimer = setTimeout(function(){
+        if (state.micActive && state.isRecording && !state.sr && !state.srStarting) startThinkAloudRecognition();
+      }, 1200);
+    }
+  }
+
+  const previousStartMic = window.startMic;
+  window.startMic = async function(){
+    if (!isResearcherTesting()) return previousStartMic ? previousStartMic.apply(this, arguments) : ensureMicForThinkAloud();
+    const stream = await ensureMicForThinkAloud();
+    if (stream && (!state.sr && !state.srStarting)) startThinkAloudRecognition();
+    return stream;
   };
+
+  const previousStopMic = window.stopMic;
+  window.stopMic = function(){
+    clearTimeout(finalAudio.srRestartTimer);
+    try { if (state.sr) { state.sr.onend = null; state.sr.stop(); } } catch(e) {}
+    state.sr = null;
+    state.srStarting = false;
+    state.micActive = false;
+    updateMicUI(false);
+    try { if (state.micStream) state.micStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+    state.micStream = null;
+    if (!isResearcherTesting() && previousStopMic) return previousStopMic.apply(this, arguments);
+  };
+
+  window.startSR = startThinkAloudRecognition;
+
+  const previousStartRec = window.startRec;
+  window.startRec = async function(){
+    if (!isResearcherTesting()) return previousStartRec ? previousStartRec.apply(this, arguments) : undefined;
+    setMicCheckbox(true);
+    await ensureMicForThinkAloud();
+    const result = previousStartRec ? await previousStartRec.apply(this, arguments) : undefined;
+    if (state.micActive && !state.sr && !state.srStarting) startThinkAloudRecognition();
+    await startFinalAudioRecorder();
+    toast('Recording started with mic audio');
+    return result;
+  };
+
+  const previousStopRec = window.stopRec;
+  window.stopRec = async function(){
+    if (!isResearcherTesting()) return previousStopRec ? previousStopRec.apply(this, arguments) : undefined;
+    const blobPromise = stopFinalAudioRecorder();
+    const result = previousStopRec ? await previousStopRec.apply(this, arguments) : undefined;
+    const blob = await blobPromise;
+    if (blob && blob.size) {
+      state.recordingBlob = blob;
+      const session = Array.isArray(state.sessions) && state.currentSession !== null ? state.sessions[state.currentSession] : null;
+      if (session) session.recordingBlob = blob;
+    }
+    try { if (typeof window.uxForceEnableResearcherActions === 'function') window.uxForceEnableResearcherActions(); } catch(e) {}
+    return result;
+  };
+
+  const previousDownloadRec = window.downloadRec;
+  window.downloadRec = function(){
+    if (!isResearcherTesting()) return previousDownloadRec ? previousDownloadRec.apply(this, arguments) : undefined;
+    try {
+      if (finalAudio.recorder && finalAudio.recorder.state === 'recording') { toast('Stop recording first, then download'); return; }
+      let blob = finalAudio.blob || state.recordingBlob;
+      if ((!blob || !blob.size) && Array.isArray(finalAudio.chunks) && finalAudio.chunks.length) blob = new Blob(finalAudio.chunks, { type:'video/webm' });
+      if ((!blob || !blob.size) && Array.isArray(state.recordingChunks) && state.recordingChunks.length) blob = new Blob(state.recordingChunks, { type:'video/webm' });
+      const session = Array.isArray(state.sessions) && state.currentSession !== null ? state.sessions[state.currentSession] : null;
+      if ((!blob || !blob.size) && session?.recordingBlob) blob = session.recordingBlob;
+      if (!blob || !blob.size) { toast('No recording found. Start, stop, then download.'); return; }
+      state.recordingBlob = blob;
+      const name = 'uxlens-screen-recording-with-audio-' + safeFilePart(state.p?.name || state.p?.id || 'participant') + '.webm';
+      downloadBlob(name, blob);
+      toast('Recording downloaded with audio');
+    } catch(e) {
+      console.error('[UXLens audio patch] download failed:', e);
+      toast('Recording download failed');
+    }
+  };
+
+  document.addEventListener('click', function(e){
+    const btn = e.target && e.target.closest ? e.target.closest('#float-bar .fbar-btn, #rec-mic, .btn-ghost') : null;
+    if (!btn || !isResearcherTesting()) return;
+    const label = (btn.textContent || '').toLowerCase();
+    if (label.includes('mic') || label.includes('start')) {
+      setTimeout(function(){ if (state?.micActive && !state.sr && !state.srStarting) startThinkAloudRecognition(); }, 650);
+    }
+  }, true);
+
+  console.log('[UXLens] Final audio + think-aloud patch loaded.');
 })();
 </script>
 
