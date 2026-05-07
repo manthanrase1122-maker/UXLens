@@ -1,131 +1,105 @@
-exports.handler = async function(event) {
-  const headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const FALLBACK_MODELS = [DEFAULT_MODEL, 'gemini-2.0-flash', 'gemini-1.5-flash'].filter((v, i, a) => v && a.indexOf(v) === i);
+
+function json(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+    },
+    body: JSON.stringify(body)
   };
+}
 
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers, body: '' };
+function getKeys() {
+  const keys = [];
+  if (process.env.GEMINI_API_KEYS) {
+    process.env.GEMINI_API_KEYS.split(',').map(v => v.trim()).filter(Boolean).forEach(k => keys.push(k));
   }
+  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY.trim());
+  return [...new Set(keys.filter(Boolean))];
+}
 
-  const keys = String(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || '')
-    .split(',')
-    .map(k => k.trim())
-    .filter(Boolean);
+function parseRetryMs(message) {
+  const m = String(message || '').match(/retry[^\d]*([\d.]+)s/i);
+  return m ? Math.ceil(Number(m[1]) * 1000) : 60000;
+}
 
-  if (!keys.length) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({
-        ok: false,
-        error: 'Missing GEMINI_API_KEY. Add it in Netlify → Site configuration → Environment variables. Scope must include Functions.'
-      })
-    };
-  }
+function isQuota(status, message) {
+  return Number(status) === 429 || /quota|rate.?limit|resource_exhausted|free_tier|exhausted/i.test(String(message || ''));
+}
 
-  const defaultModels = [
-    process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash'
-  ].filter((model, index, arr) => model && arr.indexOf(model) === index);
+exports.handler = async function(event) {
+  if (event.httpMethod === 'OPTIONS') return json(204, { ok: true });
 
-  let payload = {};
+  const keys = getKeys();
+  if (!keys.length) return json(500, { ok: false, error: 'Missing GEMINI_API_KEY Netlify environment variable.' });
+
   if (event.httpMethod === 'GET') {
-    payload = { type: 'status', prompt: 'Return only OK.', maxTokens: 8, temperature: 0 };
-  } else {
-    try {
-      payload = JSON.parse(event.body || '{}');
-    } catch (e) {
-      return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Invalid JSON body.' }) };
-    }
+    return json(200, { ok: true, message: 'Gemini Netlify function is reachable.', model: DEFAULT_MODEL, keysConfigured: keys.length });
   }
 
-  const type = payload.type || 'text';
-  const prompt = String(payload.prompt || '').trim();
-  const maxTokens = Math.min(Math.max(Number(payload.maxTokens) || 1500, 1), 8192);
-  const temperature = Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.4;
-  const topP = Number.isFinite(Number(payload.topP)) ? Number(payload.topP) : 0.9;
+  if (event.httpMethod !== 'POST') return json(405, { ok: false, error: 'Method not allowed.' });
 
-  if (!prompt) {
-    return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Missing prompt.' }) };
-  }
+  let input;
+  try { input = JSON.parse(event.body || '{}'); }
+  catch (e) { return json(400, { ok: false, error: 'Invalid JSON body.' }); }
+
+  const type = input.type || 'text';
+  const prompt = String(input.prompt || '').trim();
+  if (!prompt) return json(400, { ok: false, error: 'Missing prompt.' });
+
+  const maxTokens = Number(input.maxTokens || 1500);
+  const temperature = Number(input.temperature ?? 0.4);
+  const topP = Number(input.topP ?? 0.9);
 
   const parts = [{ text: prompt }];
   if (type === 'vision') {
-    const imageBase64 = String(payload.imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-    if (!imageBase64) {
-      return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Missing imageBase64 for vision request.' }) };
-    }
-    parts.push({ inline_data: { mime_type: payload.mimeType || 'image/jpeg', data: imageBase64 } });
+    const imageBase64 = String(input.imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
+    if (!imageBase64) return json(400, { ok: false, error: 'Missing imageBase64 for vision request.' });
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: imageBase64 } });
   }
 
-  const requestBody = {
+  const body = {
     contents: [{ parts }],
     generationConfig: { maxOutputTokens: maxTokens, temperature, topP }
   };
 
   let lastError = null;
-
   for (const key of keys) {
-    for (const model of defaultModels) {
+    for (const model of FALLBACK_MODELS) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-        const response = await fetch(url, {
+        const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
+          body: JSON.stringify(body)
         });
-
-        const data = await response.json().catch(() => ({}));
-
-        if (response.ok) {
-          const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify({
-              ok: true,
-              text,
-              model,
-              usageMetadata: data.usageMetadata || null
-            })
-          };
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('\n').trim() || '';
+          return json(200, { ok: true, text, model, usageMetadata: data.usageMetadata || null });
         }
-
-        const message = data?.error?.message || `Gemini API error ${response.status}`;
-        lastError = { status: response.status, message, details: data, model };
-
-        if (response.status === 404 || /not found/i.test(message)) {
-          continue;
-        }
-
-        if (response.status === 429 || /quota|rate.?limit|resource_exhausted|free_tier/i.test(message)) {
-          break;
-        }
-
-        break;
+        const msg = data?.error?.message || `HTTP ${resp.status}`;
+        lastError = { status: resp.status, message: msg };
+        if (resp.status === 404 || /not found|invalid model/i.test(msg)) continue;
+        if (isQuota(resp.status, msg)) break;
+        if (resp.status === 400 || resp.status === 403) break;
       } catch (e) {
-        lastError = { status: 500, message: e.message || 'Gemini request failed.', model };
+        lastError = { status: 500, message: e.message || 'Gemini request failed.' };
         break;
       }
     }
   }
 
-  const statusCode = lastError?.status && lastError.status >= 400 ? lastError.status : 500;
-  const retryMatch = String(lastError?.message || '').match(/retry in\s+([\d.]+)s/i);
-  const retryMs = retryMatch ? Math.ceil(Number(retryMatch[1]) * 1000) : undefined;
-
-  return {
-    statusCode,
-    headers,
-    body: JSON.stringify({
-      ok: false,
-      error: lastError?.message || 'Gemini API request failed.',
-      model: lastError?.model,
-      retryMs
-    })
-  };
+  const status = lastError?.status || 500;
+  const message = lastError?.message || 'Gemini request failed.';
+  return json(isQuota(status, message) ? 429 : status, {
+    ok: false,
+    error: message,
+    retryMs: parseRetryMs(message)
+  });
 };
