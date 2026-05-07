@@ -16,6 +16,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/firebase-config"
+  to = "/.netlify/functions/firebase-config"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

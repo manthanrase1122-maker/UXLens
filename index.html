@@ -2308,8 +2308,11 @@ body {
   2. In the project, click "Build" → "Realtime Database" → "Create database"
      → choose your region → Start in TEST MODE (allows read/write for 30 days)
   3. Click the gear icon → "Project settings" → scroll to "Your apps" → "</> Web"
-  4. Register the app, copy the firebaseConfig values below
-  5. Redeploy / save the file
+  4. Register the app, copy the firebaseConfig values into Netlify env vars:
+     FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_DATABASE_URL,
+     FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID,
+     FIREBASE_APP_ID, FIREBASE_MEASUREMENT_ID
+  5. Redeploy
 
   Realtime Database rules for development (paste in the Rules tab):
   {
@@ -2324,37 +2327,30 @@ body {
 <script id="uxlens-firebase-bridge">
 (function(){
 
-  /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
-  const UXLENS_FB_CONFIG = {
-  apiKey: "AIzaSyDCuAheKyctLei2khA9ijbPKEzTa9TfRDA",
-  authDomain: "uxlens-63312.firebaseapp.com",
-  databaseURL: "https://uxlens-63312-default-rtdb.firebaseio.com",
-  projectId: "uxlens-63312",
-  storageBucket: "uxlens-63312.firebasestorage.app",
-  messagingSenderId: "835547455529",
-  appId: "1:835547455529:web:3b31e60d48b0e7325a3c38",
-  measurementId: "G-4MT6N5GLNM"
-};
-  /* ── 2. FIREBASE INIT ─────────────────────────────────────────────── */
+  /* ── 1. FIREBASE CONFIG (loaded from server-side env vars) ────────── */
   window._uxFbDb = null;
-  if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
+  window._uxFbReady = (async function initFirebase() {
+    if (typeof firebase === 'undefined') {
+      console.warn('[UXLens] Firebase SDK not loaded — sync works on same device only via BroadcastChannel.');
+      return;
+    }
     try {
+      const res = await fetch('/api/firebase-config');
+      if (!res.ok) throw new Error('Config endpoint returned ' + res.status);
+      const cfg = await res.json();
+      if (!cfg.databaseURL) {
+        console.warn('[UXLens] Firebase not configured — set FIREBASE_* env vars in Netlify to enable cross-device sync.');
+        return;
+      }
       let app;
-try {
-  app = firebase.app("uxlens-63312");
-} catch (e) {
-  app = firebase.initializeApp(UXLENS_FB_CONFIG, "uxlens-63312");
-}
-window._uxFbDb = firebase.database(app);
+      try { app = firebase.app(cfg.projectId); } catch (e) { app = firebase.initializeApp(cfg, cfg.projectId); }
       window._uxFbDb = firebase.database(app);
       console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
-    } catch(e) {
+    } catch (e) {
       console.error('[UXLens] Firebase init failed:', e);
       window._uxFbDb = null;
     }
-  } else {
-    console.warn('[UXLens] Firebase not configured — fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync. Same-device sync still works via BroadcastChannel.');
-  }
+  })();
 
   /* ── 3. FirebaseChannel — drop-in for BroadcastChannel ───────────────
      API: new FirebaseChannel(name)  |  .postMessage(data)  |  .onmessage  |  .close()
@@ -8612,7 +8608,7 @@ Format:
       card.className = 'ux-online-status-card';
       const fbStatus = window._uxFbDb
         ? '🟢 Firebase connected — cross-device sync active. Participant and researcher can join from different devices.'
-        : '⚠️ Firebase not configured — sync works on same device only. Fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync.';
+        : '⚠️ Firebase not configured — sync works on same device only. Set FIREBASE_* env vars in Netlify to enable cross-device sync.';
       card.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><strong id="ux-online-status-title">Participant Status</strong><button class="btn btn-secondary" style="margin-left:auto;padding:7px 12px" onclick="uxCopyParticipantLink()">Copy Participant Link</button></div><div class="ux-status-row"><span class="ux-device-chip off" id="ux-chip-webcam">Webcam off</span><span class="ux-device-chip off" id="ux-chip-mic">Mic off</span><span class="ux-device-chip off" id="ux-chip-screen">Screen share off</span></div><div style="font-size:11.5px;color:var(--text-3);margin-top:9px">${fbStatus}</div>`;
       layout.prepend(card);
     }
