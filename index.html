@@ -2339,7 +2339,13 @@ body {
   window._uxFbDb = null;
   if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
     try {
-      const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(UXLENS_FB_CONFIG);
+      let app;
+try {
+  app = firebase.app("uxlens-63312");
+} catch (e) {
+  app = firebase.initializeApp(UXLENS_FB_CONFIG, "uxlens-63312");
+}
+window._uxFbDb = firebase.database(app);
       window._uxFbDb = firebase.database(app);
       console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
     } catch(e) {
