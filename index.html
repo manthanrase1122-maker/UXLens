@@ -8798,39 +8798,113 @@ function uxMakeRoomId(){
     showToast('Testing view opened. Turn on mic/webcam only if needed, then click I’m Ready.');
   };
 
-  async function uxParticipantAutoStartScreenShare(){
-    const liveScreen = state.screenStream && state.screenStream.getVideoTracks && state.screenStream.getVideoTracks().some(t => t.readyState === 'live');
-    if (liveScreen) {
-      uxSetParticipantOptionUI('screen', true);
-      state.online.participantDevices.screen = true;
-      uxSendRoomEvent('participant-device', { device:'screen', label:'screen share', enabled:true });
-      uxUpdateOnlineStatusUI();
-      return true;
+async function uxParticipantAutoStartScreenShare(){
+  const liveScreen =
+    state.screenStream &&
+    state.screenStream.getVideoTracks &&
+    state.screenStream.getVideoTracks().some(t => t.readyState === 'live');
+
+  if (liveScreen) {
+    uxSetParticipantOptionUI('screen', true);
+    state.online.participantDevices.screen = true;
+
+    uxSendRoomEvent('participant-device', {
+      device: 'screen',
+      label: 'screen share',
+      enabled: true
+    });
+
+    // IMPORTANT: tell RTC layer also, not only room-status layer
+    if (typeof postRtc === 'function') {
+      try {
+        ensureRtcChannel('participant');
+        postRtc('participant-ready-for-rtc', {
+          screen: true,
+          mic: !!state.micActive
+        });
+      } catch(e) {
+        console.warn('RTC ready signal failed:', e);
+      }
     }
 
-    uxSetParticipantOptionUI('screen', true);
-    showToast('Please select the screen/window to share');
-    try { await startScreenShare(); } catch(e) { console.error(e); }
-
-    const started = state.screenStream && state.screenStream.getVideoTracks && state.screenStream.getVideoTracks().some(t => t.readyState === 'live');
-    uxSetParticipantOptionUI('screen', !!started);
-    state.online.participantDevices.screen = !!started;
-    uxSendRoomEvent('participant-device', { device:'screen', label:'screen share', enabled:!!started });
     uxUpdateOnlineStatusUI();
-    return !!started;
+    return true;
   }
 
-  window.uxParticipantReadySignal = async function(){
-    const screenStarted = await uxParticipantAutoStartScreenShare();
-    if (!screenStarted) {
-      state.online.participantReady = false;
-      showToast('Screen share is needed before the researcher starts the session');
-      return;
+  uxSetParticipantOptionUI('screen', true);
+  showToast('Please select the screen/window to share');
+
+  try {
+    await startScreenShare();
+  } catch(e) {
+    console.error('Screen share start failed:', e);
+  }
+
+  const started =
+    state.screenStream &&
+    state.screenStream.getVideoTracks &&
+    state.screenStream.getVideoTracks().some(t => t.readyState === 'live');
+
+  uxSetParticipantOptionUI('screen', !!started);
+  state.online.participantDevices.screen = !!started;
+
+  uxSendRoomEvent('participant-device', {
+    device: 'screen',
+    label: 'screen share',
+    enabled: !!started
+  });
+
+  if (started) {
+    // IMPORTANT: this is the missing reliable trigger for researcher preview
+    if (typeof postRtc === 'function') {
+      try {
+        ensureRtcChannel('participant');
+        postRtc('participant-ready-for-rtc', {
+          screen: true,
+          mic: !!state.micActive
+        });
+      } catch(e) {
+        console.warn('RTC ready signal failed:', e);
+      }
     }
-    state.online.participantReady = true;
-    uxSendRoomEvent('participant-ready', { screen:true });
-    showToast('Ready signal sent. Screen share is visible to researcher.');
-  };
+  }
+
+  uxUpdateOnlineStatusUI();
+  return !!started;
+}
+
+window.uxParticipantReadySignal = async function(){
+  const screenStarted = await uxParticipantAutoStartScreenShare();
+
+  if (!screenStarted) {
+    state.online.participantReady = false;
+    showToast('Screen share is needed before the researcher starts the session');
+    return;
+  }
+
+  state.online.participantReady = true;
+
+  uxSendRoomEvent('participant-ready', {
+    screen: true
+  });
+
+  // Send RTC event again after participant-ready, because researcher may create receiver after this point
+  setTimeout(() => {
+    if (typeof postRtc === 'function') {
+      try {
+        ensureRtcChannel('participant');
+        postRtc('participant-ready-for-rtc', {
+          screen: true,
+          mic: !!state.micActive
+        });
+      } catch(e) {
+        console.warn('RTC ready retry failed:', e);
+      }
+    }
+  }, 700);
+
+  showToast('Ready signal sent. Screen share is connecting to researcher.');
+};
 
   window.uxParticipantStopSharing = function(){
     try { if (state.micActive) stopMic(); } catch(e){}
@@ -9820,19 +9894,42 @@ function uxMakeRoomId(){
     }
     return result;
   };
+window.toggleRecAndStartDevice = async function(type, el){
+  const result = baseToggleRecAndStartDevice
+    ? await baseToggleRecAndStartDevice.apply(this, arguments)
+    : undefined;
 
-  window.toggleRecAndStartDevice = async function(type, el){
-    const result = baseToggleRecAndStartDevice ? await baseToggleRecAndStartDevice.apply(this, arguments) : undefined;
-    if (isParticipant()) {
-      postRtc('participant-device-update', { device: type, enabled: !!state.recOpts[type], mic: !!state.micActive });
-      if (type === 'mic' || type === 'screen') {
-        // Restart participant RTC answer on next researcher offer so audio track can be included if mic was turned on.
-        if (participantPc) { try { participantPc.close(); } catch(e){} participantPc = null; }
-        postRtc('participant-ready-for-rtc', { screen: !!liveTrack(state.screenStream, 'video'), mic: !!state.micActive });
+  if (isParticipant()) {
+    const hasScreen =
+      state.screenStream &&
+      state.screenStream.getVideoTracks &&
+      state.screenStream.getVideoTracks().some(t => t.readyState === 'live');
+
+    postRtc('participant-device-update', {
+      device: type,
+      enabled: type === 'screen' ? !!hasScreen : !!state.recOpts[type],
+      mic: !!state.micActive
+    });
+
+    if (type === 'mic' || type === 'screen') {
+      if (participantPc) {
+        try { participantPc.close(); } catch(e){}
+        participantPc = null;
+      }
+
+      if (hasScreen) {
+        setTimeout(() => {
+          postRtc('participant-ready-for-rtc', {
+            screen: true,
+            mic: !!state.micActive
+          });
+        }, 300);
       }
     }
-    return result;
-  };
+  }
+
+  return result;
+};
 
   window.uxStartOnlineMirrorReceiver = function(){
     if (baseUxStartOnlineMirrorReceiver) baseUxStartOnlineMirrorReceiver.apply(this, arguments);
