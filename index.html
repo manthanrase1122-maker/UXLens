@@ -2326,36 +2326,40 @@ body {
 
   /* ── 1. YOUR FIREBASE CONFIG ───────────────────────────────────────── */
   const UXLENS_FB_CONFIG = {
-  apiKey: "AIzaSyDCuAheKyctLei2khA9ijbPKEzTa9TfRDA",
-  authDomain: "uxlens-63312.firebaseapp.com",
-  databaseURL: "https://uxlens-63312-default-rtdb.firebaseio.com",
-  projectId: "uxlens-63312",
-  storageBucket: "uxlens-63312.firebasestorage.app",
-  messagingSenderId: "835547455529",
-  appId: "1:835547455529:web:3b31e60d48b0e7325a3c38",
-  measurementId: "G-4MT6N5GLNM"
+  apiKey: "AIzaSyDHRhcXpA8x1VJ1c7xYlxmdQecMX57KGTw",
+  authDomain: "manthan-rase.firebaseapp.com",
+  databaseURL: "https://manthan-rase-default-rtdb.firebaseio.com",
+  projectId: "manthan-rase",
+  storageBucket: "manthan-rase.firebasestorage.app",
+  messagingSenderId: "694597664661",
+  appId: "1:694597664661:web:0eb18cfc353ed56a55409c",
+  measurementId: "G-X6T5DPFKT2"
 };
   /* ── 2. FIREBASE INIT ─────────────────────────────────────────────── */
-  window._uxFbDb = null;
-  if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
-    try {
-      let app;
-try {
-  app = firebase.app("uxlens-63312");
-} catch (e) {
-  app = firebase.initializeApp(UXLENS_FB_CONFIG, "uxlens-63312");
-}
-window._uxFbDb = firebase.database(app);
-      window._uxFbDb = firebase.database(app);
-      console.log('[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled');
-    } catch(e) {
-      console.error('[UXLens] Firebase init failed:', e);
-      window._uxFbDb = null;
-    }
-  } else {
-    console.warn('[UXLens] Firebase not configured — fill in UXLENS_FB_CONFIG in index.html to enable cross-device sync. Same-device sync still works via BroadcastChannel.');
-  }
+ window._uxFbDb = null;
 
+if (UXLENS_FB_CONFIG.databaseURL && typeof firebase !== 'undefined') {
+  try {
+    let app;
+
+    try {
+      app = firebase.app("manthan-rase");
+    } catch (e) {
+      app = firebase.initializeApp(UXLENS_FB_CONFIG, "manthan-rase");
+    }
+
+    window._uxFbDb = firebase.database(app);
+
+    console.log("[UXLens Firebase Project]", app.options.projectId);
+    console.log("[UXLens Firebase DB]", app.options.databaseURL);
+    console.log("[UXLens] Firebase Realtime Database connected ✓ — cross-device sync enabled");
+  } catch (e) {
+    console.error("[UXLens] Firebase init failed:", e);
+    window._uxFbDb = null;
+  }
+} else {
+  console.warn("[UXLens] Firebase not configured — databaseURL missing or Firebase SDK not loaded.");
+}
   /* ── 3. FirebaseChannel — drop-in for BroadcastChannel ───────────────
      API: new FirebaseChannel(name)  |  .postMessage(data)  |  .onmessage  |  .close()
      Each channel maps to  /uxlens/ch/{name}/msgs  in the Realtime Database.
@@ -2601,11 +2605,11 @@ function editTasks() { switchPhase('context-setup'); switchStep('study'); setTim
    GEMINI API — via Backend
 ══════════════════════ */
 // Backend handles API key securely - no key exposed in frontend
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Manthan 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Manthan 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Shweta 
-// const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Shyamali 
-const GEMINI_API_KEY = 'PASTE_KEY_IN_NETLIFY_ENV_ONLY'; // Poonam 
+const GEMINI_API_KEY = ""; // Manthan 
+// const GEMINI_API_KEY = 'AIzaSyDZgNVhif57khLRcUdWHz3NRTmdak-AkGw'; // Shweta 
+// const GEMINI_API_KEY = 'AIzaSyDrT7vdvm22N2j2BGogIsBC60iO7J4zzYM'; // Shyamali 
+// const GEMINI_API_KEY = 'AIzaSyBD-UFXdfwVeu8J-hkJhejjVoykEvwP9ds'; // Poonam  
+// const GEMINI_API_KEY = 'AIzaSyDlc6yD7k88Lup2Q2Y6IMRCioYXXbKvjI0'; // Shwetali  
 
 async function callGemini(prompt, maxTokens = 1500) {
   try {
