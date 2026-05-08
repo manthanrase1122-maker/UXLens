@@ -13956,309 +13956,341 @@ function roomId(){
 
 
 
-<script id="uxlens-final-video-audio-download-fix">
+<!-- ══════════════════════════════════════
+   UXLENS FINAL FIX — Cross-device screen share + stable participant device status
+   Fixes:
+   1) Participant screen visible to researcher even when WebRTC/localStorage fallback fails.
+   2) Mic/webcam/screen chips flickering ON/OFF because multiple old sync patches send conflicting states.
+══════════════════════════════════════ -->
+<script id="uxlens-final-screen-device-stability-fix">
 (function(){
   'use strict';
 
-  const av = {
-    recorder: null,
-    chunks: [],
-    blob: null,
-    url: null,
-    stream: null,
-    canvas: null,
-    ctx: null,
-    drawTimer: null,
-    stopResolve: null,
-    startedAt: 0
+  const FRAME_MS = 1000;
+  const MAX_FRAME_WIDTH = 1280;
+  const JPEG_QUALITY = 0.42;
+  const STABLE_HOLD_MS = 4500;
+
+  let framePublishTimer = null;
+  let frameListenRoom = '';
+  let deviceListenRoom = '';
+  let lastFrameAt = 0;
+  let stableDevice = {
+    mic:false, webcam:false, screen:false, ready:false,
+    micAt:0, webcamAt:0, screenAt:0, readyAt:0, at:0
   };
 
-  function toast(msg){ try { if (typeof showToast === 'function') showToast(msg); } catch(e){} }
-  function hasState(){ try { return typeof state !== 'undefined' && !!state; } catch(e){ return false; } }
-  function isParticipant(){
-    try {
-      const params = new URLSearchParams(location.search);
-      return params.get('uxRole') === 'participant' || document.body.classList.contains('ux-online-participant') || (hasState() && state.online && state.online.role === 'participant');
-    } catch(e){ return false; }
+  function getRoomId(){
+    return (window.state && state.online && state.online.roomId) || new URLSearchParams(location.search).get('uxRoom') || 'UX-PROTOTYPE';
   }
-  function isResearcherTesting(){
-    if (isParticipant()) return false;
-    try {
-      return document.getElementById('phase-testing')?.classList.contains('active') ||
-        document.body.classList.contains('ux-online-researcher') ||
-        (hasState() && state.online && state.online.role === 'researcher') ||
-        !new URLSearchParams(location.search).get('uxRole');
-    } catch(e){ return true; }
+  function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
+  function isOnlineParticipant(){ return !!(window.state && state.online && state.online.mode === 'online' && state.online.role === 'participant'); }
+  function isOnlineResearcher(){ return !!(window.state && state.online && state.online.mode === 'online' && state.online.role === 'researcher'); }
+  function hasLiveTrack(stream, kind){
+    try { return !!stream && stream.getTracks().some(t => (!kind || t.kind === kind) && t.readyState === 'live'); }
+    catch(e){ return false; }
   }
-  function liveTracks(stream, kind){
-    try { return stream && stream.getTracks ? stream.getTracks().filter(t => (!kind || t.kind === kind) && t.readyState === 'live') : []; } catch(e){ return []; }
-  }
-  function safeName(v){ return String(v || 'participant').replace(/[^a-z0-9_-]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,60) || 'participant'; }
-
-  function pickMime(){
-    const types = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=h264,opus',
-      'video/webm'
-    ];
-    return types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
-  }
-
-  function getVisibleImageSource(){
-    const ids = [
-      'ux-final-researcher-screen-img',
-      'ux-researcher-live-screen-img',
-      'ux-researcher-mirror-img',
-      'ux-online-screen-mirror-img',
-      'screen-mirror-img'
-    ];
-    for (const id of ids) {
-      const img = document.getElementById(id);
-      if (img && img.src && (img.naturalWidth || img.complete) && img.style.display !== 'none') {
-        return { type:'image', el:img, label:id };
-      }
-    }
-    // fallback: any image inside screen preview card
-    const card = document.getElementById('screen-preview-card');
-    const img = card ? card.querySelector('img[src]') : null;
-    if (img && (img.naturalWidth || img.complete)) return { type:'image', el:img, label:'screen-card-img' };
-    return null;
-  }
-
-  function getVisibleVideoSource(){
-    const ids = ['screen-vid','ux-researcher-live-screen-video','webcam-vid'];
-    for (const id of ids) {
-      const v = document.getElementById(id);
-      if (!v || v.tagName !== 'VIDEO') continue;
-      const hasVideoTrack = liveTracks(v.srcObject, 'video').length > 0;
-      const hasDimensions = Number(v.videoWidth || 0) > 0 && Number(v.videoHeight || 0) > 0;
-      const visible = v.style.display !== 'none';
-      if (visible && hasVideoTrack && hasDimensions) return { type:'video', el:v, label:id };
-    }
-    return null;
-  }
-
-  function getBestVisualSource(){
-    // For researcher view, the working cross-device screen preview is an IMG fed from Firebase.
-    // Prefer that over screen-vid, because screen-vid may have no actual remote video track.
-    return getVisibleImageSource() || getVisibleVideoSource();
-  }
-
-  function drawContain(ctx, source, cw, ch){
-    const sw = source.videoWidth || source.naturalWidth || source.width || 1;
-    const sh = source.videoHeight || source.naturalHeight || source.height || 1;
-    const scale = Math.min(cw / sw, ch / sh);
-    const w = Math.round(sw * scale);
-    const h = Math.round(sh * scale);
-    const x = Math.round((cw - w) / 2);
-    const y = Math.round((ch - h) / 2);
-    ctx.drawImage(source, x, y, w, h);
-  }
-
-  function fmtTimeSafe(sec){
-    try { return typeof fmtTime === 'function' ? fmtTime(sec || 0) : '00:00'; } catch(e){ return '00:00'; }
-  }
-
-  function drawFrame(){
-    if (!av.canvas || !av.ctx) return;
-    const c = av.canvas;
-    const ctx = av.ctx;
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, c.width, c.height);
-
-    const src = getBestVisualSource();
-    if (src && src.el) {
-      try { drawContain(ctx, src.el, c.width, c.height); }
-      catch(e) {
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(0, 0, c.width, c.height);
-      }
-    } else {
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '800 46px Plus Jakarta Sans, Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('UXLens Session Recording', c.width / 2, c.height / 2 - 24);
-      ctx.font = '400 26px Plus Jakarta Sans, Arial, sans-serif';
-      ctx.fillStyle = '#cbd5e1';
-      ctx.fillText('Waiting for participant screen preview…', c.width / 2, c.height / 2 + 28);
-    }
-
-    // optional webcam PIP when researcher webcam is available
-    try {
-      const webcam = document.getElementById('webcam-vid');
-      if (webcam && webcam.videoWidth && webcam.videoHeight && liveTracks(webcam.srcObject,'video').length) {
-        const pipW = 360;
-        const pipH = Math.round(pipW * 9 / 16);
-        const x = c.width - pipW - 34;
-        const y = c.height - pipH - 34;
-        ctx.fillStyle = 'rgba(0,0,0,.35)';
-        ctx.fillRect(x - 8, y - 8, pipW + 16, pipH + 16);
-        ctx.drawImage(webcam, x, y, pipW, pipH);
-      }
-    } catch(e) {}
-
-    ctx.fillStyle = 'rgba(0,0,0,.58)';
-    ctx.fillRect(24, 24, 300, 64);
-    ctx.fillStyle = '#fff';
-    ctx.font = '800 26px Plus Jakarta Sans, Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('UXLens  ' + fmtTimeSafe(hasState() ? state.timerSec : 0), 44, 66);
-  }
-
-  function stopDraw(){
-    if (av.drawTimer) clearInterval(av.drawTimer);
-    av.drawTimer = null;
-  }
-
-  async function addAudioSourceToDestination(audioCtx, dest, stream){
-    const tracks = liveTracks(stream, 'audio');
-    if (!tracks.length || !audioCtx || !dest) return;
-    try {
-      const clone = new MediaStream(tracks.map(t => t.clone ? t.clone() : t));
-      const source = audioCtx.createMediaStreamSource(clone);
-      source.connect(dest);
-    } catch(e) { console.warn('[UXLens AV fix] audio source failed:', e); }
-  }
-
-  async function startAVRecorder(){
-    if (!isResearcherTesting() || !window.MediaRecorder) return false;
-    if (av.recorder && av.recorder.state === 'recording') return true;
-
-    av.chunks = [];
-    av.blob = null;
-    if (av.url) URL.revokeObjectURL(av.url);
-    av.url = null;
-    stopDraw();
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 1920;
-    canvas.height = 1080;
-    const ctx = canvas.getContext('2d', { alpha:false });
-    av.canvas = canvas;
-    av.ctx = ctx;
-
-    // Draw once BEFORE captureStream so the track is real video from the first chunk.
-    drawFrame();
-    const videoStream = canvas.captureStream ? canvas.captureStream(30) : null;
-    if (!videoStream || !liveTracks(videoStream, 'video').length) {
-      toast('Video recording is not supported in this browser');
-      return false;
-    }
-    av.drawTimer = setInterval(drawFrame, 1000 / 24);
-
-    let audioCtx = null;
-    let dest = null;
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      audioCtx = AC ? new AC() : null;
-      dest = audioCtx ? audioCtx.createMediaStreamDestination() : null;
-      if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-      if (hasState()) {
-        await addAudioSourceToDestination(audioCtx, dest, state.micStream);
-        await addAudioSourceToDestination(audioCtx, dest, state.screenStream);
-      }
-      const screenVid = document.getElementById('screen-vid');
-      if (screenVid && screenVid.srcObject) await addAudioSourceToDestination(audioCtx, dest, screenVid.srcObject);
-    } catch(e) { console.warn('[UXLens AV fix] audio mix init failed:', e); }
-
-    const finalStream = new MediaStream();
-    liveTracks(videoStream, 'video').forEach(t => finalStream.addTrack(t));
-    if (dest) liveTracks(dest.stream, 'audio').forEach(t => finalStream.addTrack(t));
-
-    av.stream = finalStream;
-    av.audioCtx = audioCtx;
-    av.destination = dest;
-    if (hasState()) {
-      state.recordingStream = finalStream;
-      state.recordingChunks = av.chunks;
-    }
-
-    const mime = pickMime();
-    const opts = mime ? { mimeType:mime, videoBitsPerSecond:8000000, audioBitsPerSecond:128000 } : { videoBitsPerSecond:8000000, audioBitsPerSecond:128000 };
-    const rec = new MediaRecorder(finalStream, opts);
-    av.recorder = rec;
-    av.startedAt = Date.now();
-    if (hasState()) state.mediaRecorder = rec;
-
-    rec.ondataavailable = e => { if (e.data && e.data.size) av.chunks.push(e.data); };
-    rec.onerror = e => { console.error('[UXLens AV fix] recorder error:', e.error || e); toast('Recording error'); };
-    rec.onstop = () => {
-      const type = rec.mimeType || mime || 'video/webm';
-      av.blob = new Blob(av.chunks, { type });
-      av.url = av.blob && av.blob.size ? URL.createObjectURL(av.blob) : null;
-      if (hasState()) {
-        state.recordingBlob = av.blob;
-        state.recordingUrl = av.url;
-        state.recordingChunks = av.chunks;
-        const session = Array.isArray(state.sessions) && state.currentSession !== null ? state.sessions[state.currentSession] : null;
-        if (session && av.blob && av.blob.size) session.recordingBlob = av.blob;
-      }
-      stopDraw();
-      try { finalStream.getTracks().forEach(t => t.stop()); } catch(e) {}
-      try { if (audioCtx && audioCtx.state !== 'closed') audioCtx.close(); } catch(e) {}
-      if (av.stopResolve) av.stopResolve(av.blob || null);
-      av.stopResolve = null;
+  function getParticipantDeviceState(){
+    const webcamVideo = document.getElementById('webcam-vid');
+    const webcamStream = state.webcamStream || (webcamVideo && webcamVideo.srcObject);
+    return {
+      mic: !!state.micActive || hasLiveTrack(state.micStream, 'audio'),
+      webcam: hasLiveTrack(webcamStream, 'video'),
+      screen: hasLiveTrack(state.screenStream, 'video'),
+      ready: !!(state.online && state.online.participantReady),
+      at: Date.now()
     };
-    rec.start(1000);
-    console.log('[UXLens AV fix] recording tracks:', finalStream.getTracks().map(t => t.kind + ':' + t.readyState));
-    return true;
   }
-
-  function stopAVRecorder(){
-    return new Promise(resolve => {
-      if (!av.recorder || av.recorder.state === 'inactive') { resolve(av.blob || null); return; }
-      av.stopResolve = resolve;
-      try { av.recorder.stop(); } catch(e) { console.error('[UXLens AV fix] stop failed:', e); stopDraw(); resolve(av.blob || null); }
+  function mergeStableDevice(dev){
+    if (!dev) return stableDevice;
+    const now = Date.now();
+    ['mic','webcam','screen','ready'].forEach(k => {
+      const timeKey = k + 'At';
+      if (dev[k] === true) {
+        stableDevice[k] = true;
+        stableDevice[timeKey] = now;
+      } else if (dev[k] === false) {
+        // Old duplicated sync patches sometimes send false during device startup.
+        // Do not instantly turn OFF unless it has stayed false for a few seconds.
+        if (!stableDevice[timeKey] || now - stableDevice[timeKey] > STABLE_HOLD_MS) {
+          stableDevice[k] = false;
+        }
+      }
     });
+    stableDevice.at = Number(dev.at || now);
+    return stableDevice;
   }
 
-  function downloadBlob(name, blob){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  async function publishDeviceStable(extra){
+    if (!isOnlineParticipant() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid) return;
+    const dev = Object.assign(getParticipantDeviceState(), extra || {});
+    try {
+      await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').set(dev);
+    } catch(e) {
+      console.warn('[UXLens final fix] device publish failed:', e);
+    }
   }
 
-  const baseStartRec = window.startRec;
-  window.startRec = async function(){
-    const result = baseStartRec ? await baseStartRec.apply(this, arguments) : undefined;
-    if (isResearcherTesting()) {
-      // Start after the participant screen IMG has had a moment to render.
-      setTimeout(startAVRecorder, 450);
-      setTimeout(startAVRecorder, 1200);
+  function applyStableDeviceToResearcher(dev){
+    if (!isOnlineResearcher()) return;
+    const sdev = mergeStableDevice(dev);
+    state.online = state.online || {};
+    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
+    state.online.participantDevices.mic = !!sdev.mic;
+    state.online.participantDevices.webcam = !!sdev.webcam;
+    state.online.participantDevices.screen = !!sdev.screen;
+    state.online.participantReady = !!(sdev.ready || sdev.mic || sdev.webcam || sdev.screen);
+
+    const labels = { mic:'Mic', webcam:'Webcam', screen:'Screen share' };
+    Object.keys(labels).forEach(k => {
+      const chip = document.getElementById('ux-chip-' + k);
+      if (chip) {
+        chip.className = 'ux-device-chip ' + (sdev[k] ? 'on' : 'off');
+        chip.textContent = labels[k] + (sdev[k] ? ' on' : ' off');
+      }
+      const pill = document.getElementById('ux-device-' + k);
+      if (pill) {
+        pill.className = 'ux-online-device-pill ' + (sdev[k] ? 'on' : '');
+        pill.textContent = sdev[k] ? 'ON' : 'OFF';
+      }
+    });
+
+    const micDot = document.getElementById('mic-dot-test');
+    const micStatus = document.getElementById('mic-status-test');
+    if (micDot) micDot.classList.toggle('active', !!sdev.mic);
+    if (micStatus) micStatus.textContent = sdev.mic ? 'Participant mic on' : 'Participant mic off';
+
+    const sub = document.getElementById('ux-meeting-sub');
+    if (sub) {
+      const active = [];
+      if (sdev.mic) active.push('mic on');
+      if (sdev.webcam) active.push('webcam on');
+      if (sdev.screen) active.push('screen share on');
+      sub.textContent = active.length ? 'Participant connected · ' + active.join(' · ') : 'Waiting for participant…';
+    }
+    const dot = document.getElementById('ux-meeting-dot');
+    if (dot) dot.className = 'ux-status-dot' + (state.isRecording ? ' rec' : (state.online.participantReady ? ' on' : ''));
+  }
+
+  function startStableDeviceListener(){
+    if (!isOnlineResearcher() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid || deviceListenRoom === rid) return;
+    deviceListenRoom = rid;
+    try {
+      window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').on('value', snap => {
+        const dev = snap.val();
+        if (dev) applyStableDeviceToResearcher(dev);
+      });
+    } catch(e) { console.warn('[UXLens final fix] device listener failed:', e); }
+  }
+
+  function getScreenVideo(){
+    const v = document.getElementById('screen-vid');
+    if (!v || !hasLiveTrack(state.screenStream, 'video')) return null;
+    if (!v.videoWidth || !v.videoHeight || v.readyState < 2) return null;
+    return v;
+  }
+  function makeFrame(video){
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
+    canvas.width = Math.max(2, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(2, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext('2d', { alpha:false });
+    ctx.fillStyle = '#080b18';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+  }
+  async function publishScreenFrame(){
+    if (!isOnlineParticipant() || !window._uxFbDb) return;
+    const video = getScreenVideo();
+    if (!video) return;
+    if (Date.now() - lastFrameAt < 500) return;
+    lastFrameAt = Date.now();
+    const rid = getRoomId();
+    const dev = getParticipantDeviceState();
+    const payload = {
+      roomId: rid,
+      frame: makeFrame(video),
+      at: Date.now(),
+      screen: true,
+      mic: !!dev.mic,
+      webcam: !!dev.webcam,
+      width: video.videoWidth,
+      height: video.videoHeight
+    };
+    try {
+      await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/screenFrame').set(payload);
+      await publishDeviceStable({ screen:true, ready:true, mic:payload.mic, webcam:payload.webcam });
+    } catch(e) {
+      console.warn('[UXLens final fix] screen frame publish failed:', e);
+    }
+  }
+  function startScreenFramePublishing(){
+    if (framePublishTimer) clearInterval(framePublishTimer);
+    if (!isOnlineParticipant()) return;
+    publishScreenFrame();
+    framePublishTimer = setInterval(publishScreenFrame, FRAME_MS);
+    setTimeout(publishScreenFrame, 350);
+    setTimeout(publishScreenFrame, 1100);
+  }
+  function stopScreenFramePublishing(){
+    if (framePublishTimer) clearInterval(framePublishTimer);
+    framePublishTimer = null;
+  }
+
+  function ensureResearcherScreenImage(){
+    const card = document.getElementById('screen-preview-card');
+    if (!card) return null;
+    card.style.display = 'flex';
+    const box = card.querySelector('.webcam-box') || card;
+    box.style.position = 'relative';
+    box.style.display = 'block';
+    box.style.overflow = 'hidden';
+    box.style.background = '#080b18';
+
+    const ph = card.querySelector('.screen-placeholder-text');
+    if (ph) ph.style.display = 'none';
+
+    let img = document.getElementById('ux-final-firebase-screen-img');
+    if (!img) {
+      img = document.createElement('img');
+      img.id = 'ux-final-firebase-screen-img';
+      img.alt = 'Participant shared screen';
+      img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#080b18;border-radius:14px;z-index:80;display:none;';
+      box.appendChild(img);
+    }
+    let badge = document.getElementById('ux-final-firebase-screen-badge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'ux-final-firebase-screen-badge';
+      badge.style.cssText = 'position:absolute;left:10px;bottom:10px;z-index:90;background:rgba(0,0,0,.68);color:#fff;font-size:11px;font-weight:800;padding:5px 9px;border-radius:999px;display:none;';
+      box.appendChild(badge);
+    }
+    return { img, badge };
+  }
+  function showResearcherFrame(payload){
+    if (!payload || !payload.frame || !isOnlineResearcher()) return;
+    const ui = ensureResearcherScreenImage();
+    if (!ui) return;
+    ui.img.src = payload.frame;
+    ui.img.style.display = 'block';
+    const age = Math.round((Date.now() - Number(payload.at || Date.now())) / 1000);
+    ui.badge.textContent = age <= 2 ? 'Participant screen live' : 'Participant screen live · ' + age + 's ago';
+    ui.badge.style.display = 'block';
+    applyStableDeviceToResearcher({ screen:true, mic:!!payload.mic, webcam:!!payload.webcam, ready:true, at:payload.at || Date.now() });
+  }
+  function startScreenFrameListener(){
+    if (!isOnlineResearcher() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid || frameListenRoom === rid) return;
+    frameListenRoom = rid;
+    ensureResearcherScreenImage();
+    try {
+      window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/screenFrame').on('value', snap => {
+        const payload = snap.val();
+        if (payload && payload.frame) showResearcherFrame(payload);
+      });
+    } catch(e) { console.warn('[UXLens final fix] screen listener failed:', e); }
+  }
+
+  // Patch hooks without removing existing code.
+  const oldStartScreen = window.startScreenShare;
+  window.startScreenShare = async function(){
+    const result = oldStartScreen ? await oldStartScreen.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      setTimeout(() => publishDeviceStable({ screen:hasLiveTrack(state.screenStream, 'video'), ready:true }), 120);
+      setTimeout(startScreenFramePublishing, 650);
+      try {
+        const st = state.screenStream || result;
+        const track = st && st.getVideoTracks ? st.getVideoTracks()[0] : null;
+        if (track) track.addEventListener('ended', () => { stopScreenFramePublishing(); publishDeviceStable({ screen:false }); });
+      } catch(e){}
     }
     return result;
   };
 
-  const baseStopRec = window.stopRec;
-  window.stopRec = async function(){
-    if (!isResearcherTesting()) return baseStopRec ? await baseStopRec.apply(this, arguments) : undefined;
-    const myBlobPromise = stopAVRecorder();
-    const result = baseStopRec ? await baseStopRec.apply(this, arguments) : undefined;
-    const blob = await myBlobPromise;
-    if (blob && blob.size && hasState()) {
-      state.recordingBlob = blob;
-      state.recordingUrl = av.url || URL.createObjectURL(blob);
-      const session = Array.isArray(state.sessions) && state.currentSession !== null ? state.sessions[state.currentSession] : null;
-      if (session) session.recordingBlob = blob;
+  const oldStopScreen = window.stopScreenShare;
+  window.stopScreenShare = function(){
+    stopScreenFramePublishing();
+    const result = oldStopScreen ? oldStopScreen.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) setTimeout(() => publishDeviceStable({ screen:false }), 120);
+    return result;
+  };
+
+  const oldReady = window.uxParticipantReadySignal;
+  window.uxParticipantReadySignal = async function(){
+    const result = oldReady ? await oldReady.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      await publishDeviceStable({ ready:true, screen:hasLiveTrack(state.screenStream, 'video') });
+      startScreenFramePublishing();
+      setTimeout(publishScreenFrame, 700);
     }
     return result;
   };
 
-  window.downloadRec = function(){
-    if (av.recorder && av.recorder.state === 'recording') { toast('Stop recording first, then download'); return; }
-    const blob = av.blob || (hasState() ? state.recordingBlob : null);
-    if (!blob || !blob.size) { toast('No recording found. Start, stop, then download.'); return; }
-    downloadBlob('uxlens-video-audio-recording-' + safeName(hasState() ? (state.p?.name || state.p?.id) : 'participant') + '.webm', blob);
-    toast('Recording downloaded with video and audio');
+  const oldToggle = window.toggleRecAndStartDevice;
+  window.toggleRecAndStartDevice = async function(type, el){
+    const result = oldToggle ? await oldToggle.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      setTimeout(() => publishDeviceStable(), 120);
+      if (type === 'screen') setTimeout(startScreenFramePublishing, 700);
+    }
+    return result;
   };
 
-  window.uxFinalVideoAudioRecorder = { startAVRecorder, stopAVRecorder, getBestVisualSource };
-  console.log('[UXLens] Final video + audio download fix loaded.');
+  const oldSetMicUI = window.setMicUI;
+  window.setMicUI = function(on){
+    const result = oldSetMicUI ? oldSetMicUI.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) setTimeout(() => publishDeviceStable({ mic:!!on }), 100);
+    return result;
+  };
+
+  const oldResearcherEnter = window.uxEnterResearcherMeeting;
+  window.uxEnterResearcherMeeting = function(){
+    const result = oldResearcherEnter ? oldResearcherEnter.apply(this, arguments) : undefined;
+    setTimeout(startStableDeviceListener, 250);
+    setTimeout(startScreenFrameListener, 300);
+    return result;
+  };
+
+  const oldSwitchPhase = window.switchPhase;
+  window.switchPhase = function(phase){
+    const result = oldSwitchPhase ? oldSwitchPhase.apply(this, arguments) : undefined;
+    if (phase === 'testing') {
+      setTimeout(() => {
+        if (isOnlineResearcher()) { startStableDeviceListener(); startScreenFrameListener(); }
+        if (isOnlineParticipant()) { publishDeviceStable(); if (hasLiveTrack(state.screenStream, 'video')) startScreenFramePublishing(); }
+      }, 600);
+    }
+    return result;
+  };
+
+  // Final UI override: old patches may still call uxUpdateOnlineStatusUI with stale false values.
+  const oldStatusUI = window.uxUpdateOnlineStatusUI;
+  window.uxUpdateOnlineStatusUI = function(){
+    const result = oldStatusUI ? oldStatusUI.apply(this, arguments) : undefined;
+    if (isOnlineResearcher()) applyStableDeviceToResearcher(stableDevice);
+    return result;
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      if (isOnlineResearcher()) { startStableDeviceListener(); startScreenFrameListener(); }
+      if (isOnlineParticipant()) { publishDeviceStable(); if (hasLiveTrack(state.screenStream, 'video')) startScreenFramePublishing(); }
+    }, 1200);
+  });
+
+  window.uxFinalScreenDeviceFix = {
+    publishDeviceStable,
+    startStableDeviceListener,
+    publishScreenFrame,
+    startScreenFramePublishing,
+    startScreenFrameListener
+  };
 })();
 </script>
 
