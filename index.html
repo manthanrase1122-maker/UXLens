@@ -8526,21 +8526,41 @@ Format:
   function uxSafeJsonParse(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
   function uxEncodePayload(obj){ try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch(e){ return ''; } }
   function uxDecodePayload(str){ try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e){ return null; } }
-  function uxMakeRoomId(){ return 'UX-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
+ const UX_FIXED_ROOM_ID = 'UX-PROTOTYPE';
 
-  function uxBuildParticipantLink(){
-    const roomId = state.online.roomId || uxMakeRoomId();
-    state.online.roomId = roomId;
-    const payload = uxEncodePayload({ study: state.study, p: state.p, createdAt: new Date().toISOString() });
-    const url = new URL(location.href.split('#')[0]);
-    url.searchParams.set('uxRole','participant');
-    url.searchParams.set('uxMode','online');
-    url.searchParams.set('uxRoom',roomId);
-    if (payload) url.searchParams.set('uxCtx',payload);
-    state.online.participantLink = url.toString();
-    try { localStorage.setItem(uxRoomKey(roomId), JSON.stringify({ study: state.study, p: state.p, roomId, createdAt: new Date().toISOString() })); } catch(e){}
-    return state.online.participantLink;
+function uxMakeRoomId(){
+  return UX_FIXED_ROOM_ID;
+}
+
+ function uxBuildParticipantLink(){
+  const roomId = UX_FIXED_ROOM_ID;
+  state.online.roomId = roomId;
+
+  const url = new URL(location.origin + location.pathname);
+  url.searchParams.set('uxRole', 'participant');
+  url.searchParams.set('uxMode', 'online');
+  url.searchParams.set('uxRoom', roomId);
+
+  state.online.participantLink = url.toString();
+
+  try {
+    localStorage.setItem(
+      uxRoomKey(roomId),
+      JSON.stringify({
+        study: state.study,
+        p: state.p,
+        roomId,
+        createdAt: new Date().toISOString()
+      })
+    );
+  } catch(e) {}
+
+  if (typeof saveRoomContext === 'function') {
+    saveRoomContext(roomId);
   }
+
+  return state.online.participantLink;
+}
 
   function uxSendRoomEvent(type, payload = {}){
     const roomId = state.online.roomId;
@@ -12202,7 +12222,9 @@ Format:
   let participantPublishTimer = null;
 
   function safeJson(v, fallback){ try { return JSON.parse(v); } catch(e){ return fallback; } }
-  function roomId(){ return state && state.online && state.online.roomId ? state.online.roomId : new URLSearchParams(location.search).get('uxRoom') || ''; }
+function roomId(){
+  return state?.online?.roomId || new URLSearchParams(location.search).get('uxRoom') || 'UX-PROTOTYPE';
+}
   function isParticipant(){ return state?.online?.mode === 'online' && state?.online?.role === 'participant'; }
   function isResearcher(){ return state?.online?.mode === 'online' && state?.online?.role === 'researcher'; }
   function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
