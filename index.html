@@ -13954,5 +13954,345 @@ function roomId(){
 })();
 </script>
 
+
+
+<!-- ══════════════════════════════════════
+   UXLENS FINAL FIX — Cross-device screen share + stable participant device status
+   Fixes:
+   1) Participant screen visible to researcher even when WebRTC/localStorage fallback fails.
+   2) Mic/webcam/screen chips flickering ON/OFF because multiple old sync patches send conflicting states.
+══════════════════════════════════════ -->
+<script id="uxlens-final-screen-device-stability-fix">
+(function(){
+  'use strict';
+
+  const FRAME_MS = 1000;
+  const MAX_FRAME_WIDTH = 1280;
+  const JPEG_QUALITY = 0.42;
+  const STABLE_HOLD_MS = 4500;
+
+  let framePublishTimer = null;
+  let frameListenRoom = '';
+  let deviceListenRoom = '';
+  let lastFrameAt = 0;
+  let stableDevice = {
+    mic:false, webcam:false, screen:false, ready:false,
+    micAt:0, webcamAt:0, screenAt:0, readyAt:0, at:0
+  };
+
+  function getRoomId(){
+    return (window.state && state.online && state.online.roomId) || new URLSearchParams(location.search).get('uxRoom') || 'UX-PROTOTYPE';
+  }
+  function safeRoomKey(rid){ return String(rid || '').replace(/[.#$\[\]/]/g, '_'); }
+  function isOnlineParticipant(){ return !!(window.state && state.online && state.online.mode === 'online' && state.online.role === 'participant'); }
+  function isOnlineResearcher(){ return !!(window.state && state.online && state.online.mode === 'online' && state.online.role === 'researcher'); }
+  function hasLiveTrack(stream, kind){
+    try { return !!stream && stream.getTracks().some(t => (!kind || t.kind === kind) && t.readyState === 'live'); }
+    catch(e){ return false; }
+  }
+  function getParticipantDeviceState(){
+    const webcamVideo = document.getElementById('webcam-vid');
+    const webcamStream = state.webcamStream || (webcamVideo && webcamVideo.srcObject);
+    return {
+      mic: !!state.micActive || hasLiveTrack(state.micStream, 'audio'),
+      webcam: hasLiveTrack(webcamStream, 'video'),
+      screen: hasLiveTrack(state.screenStream, 'video'),
+      ready: !!(state.online && state.online.participantReady),
+      at: Date.now()
+    };
+  }
+  function mergeStableDevice(dev){
+    if (!dev) return stableDevice;
+    const now = Date.now();
+    ['mic','webcam','screen','ready'].forEach(k => {
+      const timeKey = k + 'At';
+      if (dev[k] === true) {
+        stableDevice[k] = true;
+        stableDevice[timeKey] = now;
+      } else if (dev[k] === false) {
+        // Old duplicated sync patches sometimes send false during device startup.
+        // Do not instantly turn OFF unless it has stayed false for a few seconds.
+        if (!stableDevice[timeKey] || now - stableDevice[timeKey] > STABLE_HOLD_MS) {
+          stableDevice[k] = false;
+        }
+      }
+    });
+    stableDevice.at = Number(dev.at || now);
+    return stableDevice;
+  }
+
+  async function publishDeviceStable(extra){
+    if (!isOnlineParticipant() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid) return;
+    const dev = Object.assign(getParticipantDeviceState(), extra || {});
+    try {
+      await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').set(dev);
+    } catch(e) {
+      console.warn('[UXLens final fix] device publish failed:', e);
+    }
+  }
+
+  function applyStableDeviceToResearcher(dev){
+    if (!isOnlineResearcher()) return;
+    const sdev = mergeStableDevice(dev);
+    state.online = state.online || {};
+    state.online.participantDevices = state.online.participantDevices || { mic:false, webcam:false, screen:false };
+    state.online.participantDevices.mic = !!sdev.mic;
+    state.online.participantDevices.webcam = !!sdev.webcam;
+    state.online.participantDevices.screen = !!sdev.screen;
+    state.online.participantReady = !!(sdev.ready || sdev.mic || sdev.webcam || sdev.screen);
+
+    const labels = { mic:'Mic', webcam:'Webcam', screen:'Screen share' };
+    Object.keys(labels).forEach(k => {
+      const chip = document.getElementById('ux-chip-' + k);
+      if (chip) {
+        chip.className = 'ux-device-chip ' + (sdev[k] ? 'on' : 'off');
+        chip.textContent = labels[k] + (sdev[k] ? ' on' : ' off');
+      }
+      const pill = document.getElementById('ux-device-' + k);
+      if (pill) {
+        pill.className = 'ux-online-device-pill ' + (sdev[k] ? 'on' : '');
+        pill.textContent = sdev[k] ? 'ON' : 'OFF';
+      }
+    });
+
+    const micDot = document.getElementById('mic-dot-test');
+    const micStatus = document.getElementById('mic-status-test');
+    if (micDot) micDot.classList.toggle('active', !!sdev.mic);
+    if (micStatus) micStatus.textContent = sdev.mic ? 'Participant mic on' : 'Participant mic off';
+
+    const sub = document.getElementById('ux-meeting-sub');
+    if (sub) {
+      const active = [];
+      if (sdev.mic) active.push('mic on');
+      if (sdev.webcam) active.push('webcam on');
+      if (sdev.screen) active.push('screen share on');
+      sub.textContent = active.length ? 'Participant connected · ' + active.join(' · ') : 'Waiting for participant…';
+    }
+    const dot = document.getElementById('ux-meeting-dot');
+    if (dot) dot.className = 'ux-status-dot' + (state.isRecording ? ' rec' : (state.online.participantReady ? ' on' : ''));
+  }
+
+  function startStableDeviceListener(){
+    if (!isOnlineResearcher() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid || deviceListenRoom === rid) return;
+    deviceListenRoom = rid;
+    try {
+      window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/participant/deviceState').on('value', snap => {
+        const dev = snap.val();
+        if (dev) applyStableDeviceToResearcher(dev);
+      });
+    } catch(e) { console.warn('[UXLens final fix] device listener failed:', e); }
+  }
+
+  function getScreenVideo(){
+    const v = document.getElementById('screen-vid');
+    if (!v || !hasLiveTrack(state.screenStream, 'video')) return null;
+    if (!v.videoWidth || !v.videoHeight || v.readyState < 2) return null;
+    return v;
+  }
+  function makeFrame(video){
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
+    canvas.width = Math.max(2, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(2, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext('2d', { alpha:false });
+    ctx.fillStyle = '#080b18';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+  }
+  async function publishScreenFrame(){
+    if (!isOnlineParticipant() || !window._uxFbDb) return;
+    const video = getScreenVideo();
+    if (!video) return;
+    if (Date.now() - lastFrameAt < 500) return;
+    lastFrameAt = Date.now();
+    const rid = getRoomId();
+    const dev = getParticipantDeviceState();
+    const payload = {
+      roomId: rid,
+      frame: makeFrame(video),
+      at: Date.now(),
+      screen: true,
+      mic: !!dev.mic,
+      webcam: !!dev.webcam,
+      width: video.videoWidth,
+      height: video.videoHeight
+    };
+    try {
+      await window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/screenFrame').set(payload);
+      await publishDeviceStable({ screen:true, ready:true, mic:payload.mic, webcam:payload.webcam });
+    } catch(e) {
+      console.warn('[UXLens final fix] screen frame publish failed:', e);
+    }
+  }
+  function startScreenFramePublishing(){
+    if (framePublishTimer) clearInterval(framePublishTimer);
+    if (!isOnlineParticipant()) return;
+    publishScreenFrame();
+    framePublishTimer = setInterval(publishScreenFrame, FRAME_MS);
+    setTimeout(publishScreenFrame, 350);
+    setTimeout(publishScreenFrame, 1100);
+  }
+  function stopScreenFramePublishing(){
+    if (framePublishTimer) clearInterval(framePublishTimer);
+    framePublishTimer = null;
+  }
+
+  function ensureResearcherScreenImage(){
+    const card = document.getElementById('screen-preview-card');
+    if (!card) return null;
+    card.style.display = 'flex';
+    const box = card.querySelector('.webcam-box') || card;
+    box.style.position = 'relative';
+    box.style.display = 'block';
+    box.style.overflow = 'hidden';
+    box.style.background = '#080b18';
+
+    const ph = card.querySelector('.screen-placeholder-text');
+    if (ph) ph.style.display = 'none';
+
+    let img = document.getElementById('ux-final-firebase-screen-img');
+    if (!img) {
+      img = document.createElement('img');
+      img.id = 'ux-final-firebase-screen-img';
+      img.alt = 'Participant shared screen';
+      img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#080b18;border-radius:14px;z-index:80;display:none;';
+      box.appendChild(img);
+    }
+    let badge = document.getElementById('ux-final-firebase-screen-badge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'ux-final-firebase-screen-badge';
+      badge.style.cssText = 'position:absolute;left:10px;bottom:10px;z-index:90;background:rgba(0,0,0,.68);color:#fff;font-size:11px;font-weight:800;padding:5px 9px;border-radius:999px;display:none;';
+      box.appendChild(badge);
+    }
+    return { img, badge };
+  }
+  function showResearcherFrame(payload){
+    if (!payload || !payload.frame || !isOnlineResearcher()) return;
+    const ui = ensureResearcherScreenImage();
+    if (!ui) return;
+    ui.img.src = payload.frame;
+    ui.img.style.display = 'block';
+    const age = Math.round((Date.now() - Number(payload.at || Date.now())) / 1000);
+    ui.badge.textContent = age <= 2 ? 'Participant screen live' : 'Participant screen live · ' + age + 's ago';
+    ui.badge.style.display = 'block';
+    applyStableDeviceToResearcher({ screen:true, mic:!!payload.mic, webcam:!!payload.webcam, ready:true, at:payload.at || Date.now() });
+  }
+  function startScreenFrameListener(){
+    if (!isOnlineResearcher() || !window._uxFbDb) return;
+    const rid = getRoomId();
+    if (!rid || frameListenRoom === rid) return;
+    frameListenRoom = rid;
+    ensureResearcherScreenImage();
+    try {
+      window._uxFbDb.ref('uxlens/rooms/' + safeRoomKey(rid) + '/screenFrame').on('value', snap => {
+        const payload = snap.val();
+        if (payload && payload.frame) showResearcherFrame(payload);
+      });
+    } catch(e) { console.warn('[UXLens final fix] screen listener failed:', e); }
+  }
+
+  // Patch hooks without removing existing code.
+  const oldStartScreen = window.startScreenShare;
+  window.startScreenShare = async function(){
+    const result = oldStartScreen ? await oldStartScreen.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      setTimeout(() => publishDeviceStable({ screen:hasLiveTrack(state.screenStream, 'video'), ready:true }), 120);
+      setTimeout(startScreenFramePublishing, 650);
+      try {
+        const st = state.screenStream || result;
+        const track = st && st.getVideoTracks ? st.getVideoTracks()[0] : null;
+        if (track) track.addEventListener('ended', () => { stopScreenFramePublishing(); publishDeviceStable({ screen:false }); });
+      } catch(e){}
+    }
+    return result;
+  };
+
+  const oldStopScreen = window.stopScreenShare;
+  window.stopScreenShare = function(){
+    stopScreenFramePublishing();
+    const result = oldStopScreen ? oldStopScreen.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) setTimeout(() => publishDeviceStable({ screen:false }), 120);
+    return result;
+  };
+
+  const oldReady = window.uxParticipantReadySignal;
+  window.uxParticipantReadySignal = async function(){
+    const result = oldReady ? await oldReady.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      await publishDeviceStable({ ready:true, screen:hasLiveTrack(state.screenStream, 'video') });
+      startScreenFramePublishing();
+      setTimeout(publishScreenFrame, 700);
+    }
+    return result;
+  };
+
+  const oldToggle = window.toggleRecAndStartDevice;
+  window.toggleRecAndStartDevice = async function(type, el){
+    const result = oldToggle ? await oldToggle.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) {
+      setTimeout(() => publishDeviceStable(), 120);
+      if (type === 'screen') setTimeout(startScreenFramePublishing, 700);
+    }
+    return result;
+  };
+
+  const oldSetMicUI = window.setMicUI;
+  window.setMicUI = function(on){
+    const result = oldSetMicUI ? oldSetMicUI.apply(this, arguments) : undefined;
+    if (isOnlineParticipant()) setTimeout(() => publishDeviceStable({ mic:!!on }), 100);
+    return result;
+  };
+
+  const oldResearcherEnter = window.uxEnterResearcherMeeting;
+  window.uxEnterResearcherMeeting = function(){
+    const result = oldResearcherEnter ? oldResearcherEnter.apply(this, arguments) : undefined;
+    setTimeout(startStableDeviceListener, 250);
+    setTimeout(startScreenFrameListener, 300);
+    return result;
+  };
+
+  const oldSwitchPhase = window.switchPhase;
+  window.switchPhase = function(phase){
+    const result = oldSwitchPhase ? oldSwitchPhase.apply(this, arguments) : undefined;
+    if (phase === 'testing') {
+      setTimeout(() => {
+        if (isOnlineResearcher()) { startStableDeviceListener(); startScreenFrameListener(); }
+        if (isOnlineParticipant()) { publishDeviceStable(); if (hasLiveTrack(state.screenStream, 'video')) startScreenFramePublishing(); }
+      }, 600);
+    }
+    return result;
+  };
+
+  // Final UI override: old patches may still call uxUpdateOnlineStatusUI with stale false values.
+  const oldStatusUI = window.uxUpdateOnlineStatusUI;
+  window.uxUpdateOnlineStatusUI = function(){
+    const result = oldStatusUI ? oldStatusUI.apply(this, arguments) : undefined;
+    if (isOnlineResearcher()) applyStableDeviceToResearcher(stableDevice);
+    return result;
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      if (isOnlineResearcher()) { startStableDeviceListener(); startScreenFrameListener(); }
+      if (isOnlineParticipant()) { publishDeviceStable(); if (hasLiveTrack(state.screenStream, 'video')) startScreenFramePublishing(); }
+    }, 1200);
+  });
+
+  window.uxFinalScreenDeviceFix = {
+    publishDeviceStable,
+    startStableDeviceListener,
+    publishScreenFrame,
+    startScreenFramePublishing,
+    startScreenFrameListener
+  };
+})();
+</script>
+
 </body>
 </html>
